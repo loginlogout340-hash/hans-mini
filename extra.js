@@ -6,6 +6,10 @@
  * commands.js  (just above module.exports):   require('./extra').register(add);
  * index.js     (after socket is created):     const extra = require('./extra'); extra.boot(sock);
  *              (top of messages.upsert loop): extra.passive(sock, m);
+ *
+ * Optional Railway variables for music:
+ *   YT_COOKIES_FILE = path to a cookies.txt   (strongest fix for the "not a bot" block)
+ *   YT_PROXY        = http://user:pass@host:port  (residential proxy, if you ever get one)
  */
 const fs = require('fs');
 const os = require('os');
@@ -46,23 +50,50 @@ function run(args) {
     });
   });
 }
+
+// YouTube blocks datacenter IPs on some clients but not others, so we try several in turn.
+const CLIENTS = ['tv', 'tv_simply', 'web_safari', 'mweb', 'android_vr', 'ios', 'web_embedded', 'default'];
+
 async function audioOf(url) {
   const base = path.join(os.tmpdir(), 'hm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
-  const args = [
+  const common = [
     '--no-playlist', '--no-warnings', '--no-progress',
     '--max-filesize', MAX_MB + 'M',
     '-f', 'bestaudio/best',
     '-x', '--audio-format', 'mp3', '--audio-quality', '5',
     '--js-runtimes', 'node',
+    '--force-ipv4',
+    '--extractor-retries', '2',
     '-o', base + '.%(ext)s',
   ];
-  if (process.env.YT_COOKIES_FILE && fs.existsSync(process.env.YT_COOKIES_FILE)) args.push('--cookies', process.env.YT_COOKIES_FILE);
-  args.push(url);
+  if (process.env.YT_COOKIES_FILE && fs.existsSync(process.env.YT_COOKIES_FILE)) common.push('--cookies', process.env.YT_COOKIES_FILE);
+  if (process.env.YT_PROXY) common.push('--proxy', process.env.YT_PROXY);
+
+  let lastErr;
   try {
-    await run(args);
-    const file = base + '.mp3';
-    if (!fs.existsSync(file)) throw new Error('Download failed (no file produced).');
-    return fs.readFileSync(file);
+    for (const client of CLIENTS) {
+      const args = [...common];
+      if (client !== 'default') args.push('--extractor-args', 'youtube:player_client=' + client);
+      args.push(url);
+      try {
+        await run(args);
+        const file = base + '.mp3';
+        if (fs.existsSync(file)) {
+          if (process.env.DEBUG_EXTRA) console.log('[extra] download ok with client', client);
+          return fs.readFileSync(file);
+        }
+        lastErr = new Error('Download failed (no file produced).');
+      } catch (e) {
+        lastErr = e;
+        if (process.env.DEBUG_EXTRA) console.log('[extra] client', client, 'failed:', e.message);
+        // File too large is not a client problem, stop early
+        if (/larger than max-filesize|File is larger/i.test(e.message)) throw new Error(`Song is larger than ${MAX_MB}MB.`);
+      }
+    }
+    if (/sign in|not a bot|cookies/i.test(lastErr?.message || '')) {
+      throw new Error('YouTube is blocking this server right now. Try again later or add a cookies file.');
+    }
+    throw lastErr || new Error('Download failed.');
   } finally {
     for (const ext of ['mp3', 'webm', 'm4a', 'opus', 'part']) fs.unlink(base + '.' + ext, () => {});
   }
@@ -101,7 +132,7 @@ function register(add) {
   add('song', 'Media', '<name or link>', 'Search YouTube and send the song as a downloadable file', (ctx) => music(ctx, true), { aliases: ['mp3'] });
 
   add('react', 'Fun', '<emoji>', 'Reply to a message with this command to react to it', async (ctx) => {
-    const emoji = (ctx.text.match(/\p{Extended_Pictographic}(️|‍\p{Extended_Pictographic})*/u) || [])[0];
+    const emoji = (ctx.text.match(/\p{Extended_Pictographic}(\uFE0F|\u200D\p{Extended_Pictographic})*/u) || [])[0];
     if (!emoji) throw new Error(`Usage: reply to a message with ${ctx.prefix}react 😂`);
     const key = ctx.quoted
       ? { remoteJid: ctx.jid, id: ctx.quoted.id, participant: ctx.quoted.participant, fromMe: !!ctx.quoted.fromBot }
