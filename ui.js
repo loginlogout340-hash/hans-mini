@@ -141,10 +141,11 @@ function install(registry, commands) {
   if (m) m.run = menuRun(commands);
 }
 
-let welcomed = false;
+// the welcome banner is sent once per user (the flag is saved in that user's settings)
 async function welcome(sock, config, count) {
-  if (welcomed || /^(off|false|0)$/i.test(process.env.WELCOME || '')) return;
-  welcomed = true;
+  if (config.welcomed || /^(off|false|0)$/i.test(process.env.WELCOME || '')) return;
+  config.welcomed = true;
+  if (config.save) config.save();
   const jid = config.owners[0] ? config.owners[0] + '@s.whatsapp.net' : norm(sock.user.id);
   await sleep(2500);
   await sendWithImage(sock, jid, banner(config, count, true));
