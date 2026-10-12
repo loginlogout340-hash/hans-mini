@@ -26,6 +26,11 @@ const config = {
   antiViewOnce: /^(on|true|1)$/i.test(process.env.ANTI_VIEWONCE || ''),
   antiDelete: /^(on|true|1)$/i.test(process.env.ANTI_DELETE || ''),
 };
+// .autolikestatus emoji random  ->  a different emoji from this list for every status
+const STATUS_EMOJIS = ['❤️', '🔥', '😂', '😍', '👏', '🥰', '💯', '😭', '🤣', '🙏', '👌', '💪', '🤩', '😎', '🥳', '✨', '💀', '🤯', '😤', '💅', '👀', '🎉', '😈', '🤫', '🫶'];
+const likeEmojiNow = () => (!config.likeEmoji || String(config.likeEmoji).toLowerCase() === 'random'
+  ? STATUS_EMOJIS[Math.floor(Math.random() * STATUS_EMOJIS.length)]
+  : config.likeEmoji);
 const settingsFile = () => config.sessionDir + '/settings.json';
 try {
   const saved = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
@@ -193,7 +198,7 @@ async function handleStatus(sock, msg) {
     if (config.autoLikeStatus) {
       const list = [...new Set([...posters, norm(sock.user.id), sock.user?.lid ? norm(sock.user.lid) : null].filter(Boolean))];
       await sock.sendMessage('status@broadcast',
-        { react: { key: msg.key, text: config.likeEmoji } },
+        { react: { key: msg.key, text: likeEmojiNow() } },
         { statusJidList: list });
       console.log('[status] liked status from', posters[0]);
     }
