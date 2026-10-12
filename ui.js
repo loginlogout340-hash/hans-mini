@@ -18,9 +18,13 @@ const LINE = '◁──────────────────▷';
 
 function imageSource() {
   if (process.env.MENU_IMAGE) return { url: process.env.MENU_IMAGE };
-  for (const f of ['menu.jpg', 'menu.jpeg', 'menu.png', 'menu.webp']) {
-    const p = path.join(__dirname, f);
-    if (fs.existsSync(p)) { try { return fs.readFileSync(p); } catch { /* try next */ } }
+  // menu.* wins; otherwise the first image file found next to index.js is used
+  let files = [];
+  try { files = fs.readdirSync(__dirname); } catch { /* ignore */ }
+  const images = files.filter((f) => /\.(jpe?g|png|webp)$/i.test(f));
+  images.sort((a, b) => (/^menu\./i.test(b) ? 1 : 0) - (/^menu\./i.test(a) ? 1 : 0));
+  for (const f of images) {
+    try { return fs.readFileSync(path.join(__dirname, f)); } catch { /* try next */ }
   }
   return null;
 }
