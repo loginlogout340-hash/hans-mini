@@ -10,8 +10,10 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@distube/ytdl-core": "latest",
     "@whiskeysockets/baileys": "latest",
-    "pino": "^9.0.0"
+    "pino": "^9.0.0",
+    "yt-search": "latest"
   },
   "license": "MIT"
 }
