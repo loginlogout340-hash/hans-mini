@@ -359,4 +359,6 @@ add('retrieve', 'Owner', '[here]', 'Reply to a view-once or media message to get
 }, { owner: true, aliases: ['vv', 'readvo'] });
 add('restart', 'Owner', '', 'Restart the bot', async (ctx) => { await ctx.reply('♻️ Restarting...'); setTimeout(() => process.exit(0), 1000); }, { owner: true, aliases: ['reboot'] });
 
+require('./extra').register(add);
+
 module.exports = { commands, targetsOf };
