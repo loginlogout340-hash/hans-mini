@@ -74,7 +74,7 @@ add('ping', 'General', '', 'Check if the bot is responding', (ctx) => {
 
 add('alive', 'General', '', 'Confirm the bot is online', (ctx) => `✅ ${ctx.config.botName} is online.\nUptime: ${fmtDuration(Date.now() - ctx.config.startedAt)}`);
 add('uptime', 'General', '', 'How long the bot has been running', (ctx) => `⏱️ Uptime: ${fmtDuration(Date.now() - ctx.config.startedAt)}`, { aliases: ['runtime'] });
-add('owner', 'General', '', "Show the owner's contact", (ctx) => ctx.config.owners.length ? 'Owner: ' + ctx.config.owners.map((o) => 'wa.me/' + o).join('\n') : 'No owner number has been set.');
+add('owner', 'General', '', "Show the owner's contact", (ctx) => ctx.config.ownerName ? 'Owner: ' + ctx.config.ownerName : ctx.config.owners.length ? 'Owner: ' + ctx.config.owners.map((o) => 'wa.me/' + o).join('\n') : 'No owner has been set.');
 add('about', 'General', '', 'About this bot', (ctx) => `*${ctx.config.botName}*\nA small WhatsApp bot with ${commands.length} commands, built on Baileys.\nType ${ctx.prefix}menu to see them.`, { aliases: ['info'] });
 add('sysinfo', 'General', '', 'Server memory and CPU info', () => {
   const used = (process.memoryUsage().rss / 1048576).toFixed(0);
