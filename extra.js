@@ -22,11 +22,12 @@ const MAX_MB = 40;
 const num = (j = '') => String(j).split('@')[0].split(':')[0];
 
 /* ---------- persistent store ---------- */
-let db = { groups: {}, stickers: {}, alwaysOnline: false };
+let db = { groups: {}, stickers: {}, alwaysOnline: false, warns: {} };
 try { db = { ...db, ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) }; } catch {}
 let t;
 const save = () => { clearTimeout(t); t = setTimeout(() => { try { fs.mkdirSync(path.dirname(DB_FILE), { recursive: true }); fs.writeFileSync(DB_FILE, JSON.stringify(db)); } catch {} }, 500); };
 const grp = (jid) => (db.groups[jid] ||= { antiGroupMention: 'off', antiTag: 'off' });
+const DEFAULT_WARN_LIMIT = 3;
 
 /* ---------- music (yt-dlp) ---------- */
 const videoIdOf = (u) => {
@@ -141,16 +142,26 @@ function register(add) {
   });
 
   const guard = (name, key, label, desc) =>
-    add(name, 'Group', 'on|delete|kick|off', desc, (ctx) => {
+    add(name, 'Group', 'on|delete|warn|kick|off', desc, (ctx) => {
       const v = (ctx.args[0] || '').toLowerCase();
       const cfg = grp(ctx.jid);
-      if (!['on', 'delete', 'kick', 'off'].includes(v)) return `${label}: *${cfg[key]}*\nUsage: ${ctx.prefix}${name} on|delete|kick|off`;
+      if (!['on', 'delete', 'warn', 'kick', 'off'].includes(v)) return `${label}: *${cfg[key]}*\nUsage: ${ctx.prefix}${name} on|delete|warn|kick|off\n(delete = remove the message, warn = delete + warning, kick after the warn limit, kick = remove at once)`;
       cfg[key] = v === 'on' ? 'delete' : v;
       save();
       return `✅ ${label} is now *${cfg[key]}*`;
     }, { group: true, admin: true, botAdmin: true });
-  guard('antigroupmention', 'antiGroupMention', 'Anti group mention', 'Delete (or kick for) messages that mention the group in a status');
-  guard('antitag', 'antiTag', 'Anti tag', 'Delete (or kick for) mass tagging by non-admins');
+  guard('antigroupmention', 'antiGroupMention', 'Anti group mention', 'Delete, warn or kick for messages that mention the group in a status');
+  guard('antitag', 'antiTag', 'Anti tag', 'Delete, warn or kick for mass tagging by non-admins');
+
+  add('warnlimit', 'Group', '<number>', 'How many warnings before a member is kicked (default 3)', (ctx) => {
+    const cfg = grp(ctx.jid);
+    const n = parseInt(ctx.args[0], 10);
+    if (!n) return `Warn limit: *${cfg.warnLimit || DEFAULT_WARN_LIMIT}*\nUsage: ${ctx.prefix}warnlimit 3`;
+    if (n < 1 || n > 20) throw new Error('Choose a number from 1 to 20.');
+    cfg.warnLimit = n;
+    save();
+    return `✅ Members are kicked after *${n}* warnings.`;
+  }, { group: true, admin: true });
 
   add('stickcmd', 'Owner', '<command> | del | list', 'Reply to a sticker to make it run a command, e.g. stickcmd vv', (ctx) => {
     const arg = (ctx.args[0] || '').toLowerCase().replace(/^[^a-z0-9]+/, '');
@@ -224,15 +235,36 @@ async function passive(sock, m) {
     const senderIds = [sender, m.key.participantAlt].filter(Boolean).map(num);
     const botIds = [sock.user?.id, sock.user?.lid].filter(Boolean).map(num);
     const isAdminOf = (ids) => md.participants.some((p) => p.admin && [p.id, p.lid, p.jid, p.phoneNumber].filter(Boolean).map(num).some((x) => ids.includes(x)));
-    if (isAdminOf(senderIds)) return;
-    if (!isAdminOf(botIds)) { console.log('[extra] bot is not admin in this group'); return; }
+    const tagName = num(sender);
+    if (isAdminOf(senderIds)) {
+      if (isGM) await sock.sendMessage(jid, { text: `Admin @${tagName} dropped a status mention. Admins get a pass, but keep it minimal.`, mentions: [sender] });
+      return;
+    }
+    if (!isAdminOf(botIds)) {
+      console.log('[extra] bot is not admin in this group');
+      if (isGM) await sock.sendMessage(jid, { text: `@${tagName} sent a status mention. Make me admin so I can act on it.`, mentions: [sender] });
+      return;
+    }
     await sock.sendMessage(jid, { delete: m.key }).catch(() => {});
     const why = isGM ? 'group mentions' : 'mass tagging';
     if (mode === 'kick') {
       await sock.groupParticipantsUpdate(jid, [sender], 'remove').catch(() => {});
       await sock.sendMessage(jid, { text: `🚫 @${num(sender)} removed for ${why}.`, mentions: [sender] });
+    } else if (mode === 'warn') {
+      const limit = cfg.warnLimit || DEFAULT_WARN_LIMIT;
+      const w = (db.warns[jid] ||= {});
+      const n = (w[tagName] = (w[tagName] || 0) + 1);
+      if (n >= limit) {
+        delete w[tagName];
+        save();
+        await sock.groupParticipantsUpdate(jid, [sender], 'remove').catch(() => {});
+        await sock.sendMessage(jid, { text: `🚨 @${tagName} removed.\nReason: ${why}\nWarns: ${n}/${limit}`, mentions: [sender] });
+      } else {
+        save();
+        await sock.sendMessage(jid, { text: `⚠️ @${tagName}, warned for ${why}!\nMessage deleted.\nWarns: ${n}/${limit}. ${limit - n} more and you are removed.`, mentions: [sender] });
+      }
     } else {
-      await sock.sendMessage(jid, { text: `⚠️ @${num(sender)}, ${why} are not allowed here.`, mentions: [sender] });
+      await sock.sendMessage(jid, { text: `⚠️ @${tagName}, ${why} are not allowed here.`, mentions: [sender] });
     }
   } catch (e) { console.error('[extra]', e.message); }
 }
