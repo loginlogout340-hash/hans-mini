@@ -64,7 +64,7 @@ function banner(config, count, welcome) {
 🕒 *Time:* ${time}
 📖 *Library:* Baileys
 
-| ツ *Owner:* ${config.owners[0] ? '+' + config.owners[0] : 'not set'}
+| ツ *Owner:* ${config.ownerName || (config.owners[0] ? '+' + config.owners[0] : 'not set')}
 ${LINE}`;
 }
 
