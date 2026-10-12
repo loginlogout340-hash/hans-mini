@@ -1,15 +1,16 @@
 'use strict';
 /**
  * Hans-Mini extras: play, song, react, antigroupmention, antitag, stickcmd, alwaysonline
- * Deps: npm i yt-search @distube/ytdl-core
+ * Deps: npm i yt-search   (downloads use yt-dlp + ffmpeg installed in the Dockerfile)
  *
  * commands.js  (just above module.exports):   require('./extra').register(add);
  * index.js     (after socket is created):     const extra = require('./extra'); extra.boot(sock);
  *              (top of messages.upsert loop): extra.passive(sock, m);
  */
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const ytdl = require('@distube/ytdl-core');
+const { execFile } = require('child_process');
 const yts = require('yt-search');
 
 const DB_FILE = path.join(process.env.SESSION_DIR || './session', '..', 'extra-settings.json');
@@ -23,21 +24,48 @@ let t;
 const save = () => { clearTimeout(t); t = setTimeout(() => { try { fs.mkdirSync(path.dirname(DB_FILE), { recursive: true }); fs.writeFileSync(DB_FILE, JSON.stringify(db)); } catch {} }, 500); };
 const grp = (jid) => (db.groups[jid] ||= { antiGroupMention: 'off', antiTag: 'off' });
 
-/* ---------- music ---------- */
+/* ---------- music (yt-dlp) ---------- */
+const videoIdOf = (u) => {
+  const m = String(u).match(/(?:v=|youtu\.be\/|shorts\/|embed\/)([A-Za-z0-9_-]{11})/);
+  return m && m[1];
+};
 async function findVideo(q) {
-  if (/^https?:\/\//i.test(q)) return yts({ videoId: ytdl.getURLVideoID(q) });
+  if (/^https?:\/\//i.test(q)) {
+    const id = videoIdOf(q);
+    if (!id) throw new Error('That does not look like a YouTube link.');
+    return yts({ videoId: id });
+  }
   const r = await yts(q);
   return r.videos.find((v) => v.seconds > 0 && v.seconds <= 3600);
 }
+function run(args) {
+  return new Promise((ok, no) => {
+    execFile('yt-dlp', args, { timeout: 180000, maxBuffer: 1 << 24 }, (err, out, errout) => {
+      if (err) return no(new Error(String(errout || err.message).split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 250)));
+      ok(out);
+    });
+  });
+}
 async function audioOf(url) {
-  const info = await ytdl.getInfo(url);
-  const fmt = ytdl.chooseFormat(info.formats, { quality: 'highestaudio', filter: 'audioonly' });
-  const mb = Number(fmt.contentLength || 0) / 1048576;
-  if (mb > MAX_MB) throw new Error(`Audio is ${mb.toFixed(0)}MB, limit is ${MAX_MB}MB.`);
-  const chunks = [];
-  await new Promise((ok, no) => ytdl.downloadFromInfo(info, { format: fmt, highWaterMark: 1 << 25 })
-    .on('data', (c) => chunks.push(c)).on('end', ok).on('error', no));
-  return Buffer.concat(chunks);
+  const base = path.join(os.tmpdir(), 'hm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+  const args = [
+    '--no-playlist', '--no-warnings', '--no-progress',
+    '--max-filesize', MAX_MB + 'M',
+    '-f', 'bestaudio/best',
+    '-x', '--audio-format', 'mp3', '--audio-quality', '5',
+    '--js-runtimes', 'node',
+    '-o', base + '.%(ext)s',
+  ];
+  if (process.env.YT_COOKIES_FILE && fs.existsSync(process.env.YT_COOKIES_FILE)) args.push('--cookies', process.env.YT_COOKIES_FILE);
+  args.push(url);
+  try {
+    await run(args);
+    const file = base + '.mp3';
+    if (!fs.existsSync(file)) throw new Error('Download failed (no file produced).');
+    return fs.readFileSync(file);
+  } finally {
+    for (const ext of ['mp3', 'webm', 'm4a', 'opus', 'part']) fs.unlink(base + '.' + ext, () => {});
+  }
 }
 async function music(ctx, asFile) {
   const q = ctx.text || ctx.quoted?.text;
@@ -50,9 +78,9 @@ async function music(ctx, asFile) {
   const quoted = { quoted: ctx.msg };
   if (asFile) {
     const name = v.title.replace(/[\\/:*?"<>|]/g, '').slice(0, 80);
-    await ctx.sock.sendMessage(ctx.jid, { document: buf, mimetype: 'audio/mp4', fileName: name + '.m4a' }, quoted);
+    await ctx.sock.sendMessage(ctx.jid, { document: buf, mimetype: 'audio/mpeg', fileName: name + '.mp3' }, quoted);
   } else {
-    await ctx.sock.sendMessage(ctx.jid, { audio: buf, mimetype: 'audio/mp4', ptt: false }, quoted);
+    await ctx.sock.sendMessage(ctx.jid, { audio: buf, mimetype: 'audio/mpeg', ptt: false }, quoted);
   }
 }
 
