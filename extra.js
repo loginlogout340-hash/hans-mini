@@ -178,16 +178,22 @@ async function passive(sock, m) {
     if (!cfg || (cfg.antiGroupMention === 'off' && cfg.antiTag === 'off')) return;
     const raw = m.message || {};
     const c = unwrapContent(m);
-    const isGM = !!(raw.groupStatusMentionMessage || raw.groupMentionedMessage || raw.statusMentionMessage);
-    const mentions = c.extendedTextMessage?.contextInfo?.mentionedJid || c.imageMessage?.contextInfo?.mentionedJid || c.videoMessage?.contextInfo?.mentionedJid || [];
+    if (process.env.DEBUG_EXTRA) console.log('[extra] group msg keys:', Object.keys(raw), 'inner:', Object.keys(c));
+    const hasKey = (o, re, d = 0) => !!o && typeof o === 'object' && !ArrayBuffer.isView(o) && d < 4 && Object.keys(o).some((k) => re.test(k) || hasKey(o[k], re, d + 1));
+    const proto = raw.protocolMessage || c.protocolMessage;
+    const isGM = hasKey(raw, /^(groupStatusMentionMessage|groupMentionedMessage|statusMentionMessage)$/) || proto?.type === 25 || proto?.type === 'STATUS_MENTION_MESSAGE';
+    const mentions = Object.values(c).map((v) => v?.contextInfo?.mentionedJid).find((a) => Array.isArray(a)) || [];
     const txt = c.conversation || c.extendedTextMessage?.text || c.imageMessage?.caption || c.videoMessage?.caption || '';
     const isTag = mentions.length >= 5 || /(^|\s)@(everyone|all)\b/i.test(txt);
     const mode = isGM ? cfg.antiGroupMention : isTag ? cfg.antiTag : 'off';
     if (mode === 'off') return;
-    const sender = m.key.participant;
+    const sender = m.key.participant || m.participant;
     const md = await groupMeta(sock, jid);
-    const admin = (id) => md.participants.some((p) => (num(p.id) === num(id) || num(p.phoneNumber) === num(id)) && p.admin);
-    if (admin(sender) || !admin(sock.user.id)) return;
+    const senderIds = [sender, m.key.participantAlt].filter(Boolean).map(num);
+    const botIds = [sock.user?.id, sock.user?.lid].filter(Boolean).map(num);
+    const isAdminOf = (ids) => md.participants.some((p) => p.admin && [p.id, p.lid, p.jid, p.phoneNumber].filter(Boolean).map(num).some((x) => ids.includes(x)));
+    if (isAdminOf(senderIds)) return;
+    if (!isAdminOf(botIds)) { console.log('[extra] bot is not admin in this group'); return; }
     await sock.sendMessage(jid, { delete: m.key }).catch(() => {});
     const why = isGM ? 'group mentions' : 'mass tagging';
     if (mode === 'kick') {
