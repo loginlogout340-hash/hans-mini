@@ -6,6 +6,7 @@
 const fs = require('fs');
 const pino = require('pino');
 const { commands } = require('./commands');
+const extra = require('./extra');
 const { unwrap, getText, isViewOnce, makeForwarder } = require('./media');
 
 const config = {
@@ -57,6 +58,16 @@ async function getGroup(sock, jid) {
   return data;
 }
 const idsOf = (p) => [p.id, p.lid, p.jid, p.phoneNumber].filter(Boolean).map(norm);
+
+// a sticker bound with .stickcmd runs its command (owner only); the sticker's reply context is kept
+function withStickerCmd(msg) {
+  const cmd = extra.stickerCommand(msg);
+  if (!cmd) return msg;
+  const fromOwner = msg.key.fromMe || [msg.key.participant, msg.key.participantAlt, msg.key.remoteJid].some((j) => j && config.owners.includes(digits(j)));
+  if (!fromOwner) return msg;
+  const st = unwrap(msg.message).stickerMessage;
+  return { ...msg, message: { extendedTextMessage: { text: config.prefix + cmd, contextInfo: st.contextInfo || {} } } };
+}
 
 async function handle(sock, msg) {
   const jid = msg.key.remoteJid;
@@ -203,6 +214,7 @@ async function start() {
   });
 
   sock.ev.on('creds.update', saveCreds);
+  extra.boot(sock);
   forward = makeForwarder((m) => downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage }));
 
   if (!sock.authState.creds.registered) {
@@ -241,7 +253,8 @@ async function start() {
       else {
         remember(msg);
         watchers(sock, msg);
-        handle(sock, msg).catch((e) => console.error('handler error:', e));
+        extra.passive(sock, msg);
+        handle(sock, withStickerCmd(msg)).catch((e) => console.error('handler error:', e));
       }
     }
   });
