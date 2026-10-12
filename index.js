@@ -8,6 +8,7 @@ const pino = require('pino');
 const { commands } = require('./commands');
 const extra = require('./extra');
 const { unwrap, getText, isViewOnce, makeForwarder } = require('./media');
+const ui = require('./ui');
 
 const config = {
   botName: process.env.BOT_NAME || 'Hans-Mini',
@@ -45,6 +46,8 @@ for (const c of commands) {
     registry.set(n, c);
   }
 }
+
+ui.install(registry, commands); // styled menu with the default picture
 
 const norm = (j) => String(j || '').replace(/:\d+@/, '@');
 const digits = (j) => String(j || '').split('@')[0].split(':')[0].replace(/\D/g, '');
@@ -202,7 +205,8 @@ async function start() {
   // Works whether the installed Baileys is CommonJS (v6) or ESM (v7)
   const B = baileys.default && (baileys.default.useMultiFileAuthState || baileys.default.default) ? baileys.default : baileys;
   const makeWASocket = typeof B.default === 'function' ? B.default : B.makeWASocket;
-  const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage } = B;
+  const { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers, downloadMediaMessage, generateWAMessageFromContent, proto } = B;
+  ui.init({ generateWAMessageFromContent, proto });
   const logger = pino({ level: 'silent' });
 
   fs.mkdirSync(config.sessionDir, { recursive: true });
@@ -240,7 +244,10 @@ async function start() {
   }
 
   sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
-    if (connection === 'open') console.log(`✅ ${config.botName} connected as ${sock.user?.id}`);
+    if (connection === 'open') {
+      console.log(`✅ ${config.botName} connected as ${sock.user?.id}`);
+      ui.welcome(sock, config, commands.length).catch((e) => console.error('welcome error:', e.message));
+    }
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;
       if (code === DisconnectReason.loggedOut) {
@@ -260,7 +267,7 @@ async function start() {
       remember(msg);
       watchers(sock, msg);
       extra.passive(sock, msg);
-      handle(sock, withStickerCmd(msg)).catch((e) => console.error('handler error:', e));
+      handle(sock, ui.fromListReply(withStickerCmd(msg))).catch((e) => console.error('handler error:', e));
     }
   });
 }
