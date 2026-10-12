@@ -1,11 +1,14 @@
 'use strict';
 /**
- * Hans-Mini extras: play, song, react, antigroupmention, antitag, stickcmd, alwaysonline
+ * Hans-Mini extras: play, song, react, antigroupmention, antitag, stickcmd, alwaysonline, unlink
  * Deps: npm i yt-search   (downloads use yt-dlp + ffmpeg installed in the Dockerfile)
  *
+ * MULTI-USER: every connected user has their own settings. They live on the socket
+ * (sock.hm) and are saved in that user's own folder (extra.json).
+ *
  * commands.js  (just above module.exports):   require('./extra').register(add);
- * index.js     (after socket is created):     const extra = require('./extra'); extra.boot(sock);
- *              (top of messages.upsert loop): extra.passive(sock, m);
+ * bot.js       (after socket is created):     extra.boot(sock, userDir);
+ *              (every message):               extra.passive(sock, m);
  *
  * Optional Railway variables for music:
  *   YT_COOKIES_FILE = path to a cookies.txt   (strongest fix for the "not a bot" block)
@@ -19,7 +22,6 @@ const path = require('path');
 const { execFile } = require('child_process');
 const yts = require('yt-search');
 
-const DB_FILE = path.join(process.env.SESSION_DIR || './session', '..', 'extra-settings.json');
 const MAX_MB = 40;
 
 /* ---------- download API (optional: MALVIN_API + MALVIN_KEY) ---------- */
@@ -60,12 +62,21 @@ function toMp3(buf) {
 }
 const num = (j = '') => String(j).split('@')[0].split(':')[0];
 
-/* ---------- persistent store ---------- */
-let db = { groups: {}, stickers: {}, alwaysOnline: false, warns: {} };
-try { db = { ...db, ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) }; } catch {}
-let t;
-const save = () => { clearTimeout(t); t = setTimeout(() => { try { fs.mkdirSync(path.dirname(DB_FILE), { recursive: true }); fs.writeFileSync(DB_FILE, JSON.stringify(db)); } catch {} }, 500); };
-const grp = (jid) => (db.groups[jid] ||= { antiGroupMention: 'off', antiTag: 'off' });
+/* ---------- per-user store (kept on the socket, saved in the user's own folder) ---------- */
+function newState(dir) {
+  const file = dir ? path.join(dir, 'extra.json') : null;
+  let db = { groups: {}, stickers: {}, alwaysOnline: false, warns: {} };
+  if (file) { try { db = { ...db, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch { /* first run */ } }
+  let t;
+  const save = () => {
+    if (!file) return;
+    clearTimeout(t);
+    t = setTimeout(() => { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(db)); } catch { /* ignore */ } }, 500);
+  };
+  return { db, save, timer: null, meta: new Map() };
+}
+const hmOf = (sock) => sock.hm || (sock.hm = newState(null));
+const grp = (db, jid) => (db.groups[jid] ||= { antiGroupMention: 'off', antiTag: 'off' });
 const DEFAULT_WARN_LIMIT = 3;
 
 /* ---------- music (yt-dlp) ---------- */
@@ -163,13 +174,13 @@ async function music(ctx, asFile) {
 }
 
 /* ---------- always online ---------- */
-let timer;
 function applyOnline(sock) {
-  clearInterval(timer);
-  if (!db.alwaysOnline) return;
+  const hm = hmOf(sock);
+  clearInterval(hm.timer);
+  if (!hm.db.alwaysOnline) return;
   const ping = () => sock.sendPresenceUpdate('available').catch(() => {});
   ping();
-  timer = setInterval(ping, 25000);
+  hm.timer = setInterval(ping, 25000);
 }
 
 /* ---------- commands ---------- */
@@ -223,8 +234,9 @@ function register(add) {
 
   const guard = (name, key, label, desc) =>
     add(name, 'Group', 'on|delete|warn|kick|off', desc, (ctx) => {
+      const { db, save } = hmOf(ctx.sock);
       const v = (ctx.args[0] || '').toLowerCase();
-      const cfg = grp(ctx.jid);
+      const cfg = grp(db, ctx.jid);
       if (!['on', 'delete', 'warn', 'kick', 'off'].includes(v)) return `${label}: *${cfg[key]}*\nUsage: ${ctx.prefix}${name} on|delete|warn|kick|off\n(delete = remove the message, warn = delete + warning, kick after the warn limit, kick = remove at once)`;
       cfg[key] = v === 'on' ? 'delete' : v;
       save();
@@ -234,7 +246,8 @@ function register(add) {
   guard('antitag', 'antiTag', 'Anti tag', 'Delete, warn or kick for mass tagging by non-admins');
 
   add('warnlimit', 'Group', '<number>', 'How many warnings before a member is kicked (default 3)', (ctx) => {
-    const cfg = grp(ctx.jid);
+    const { db, save } = hmOf(ctx.sock);
+    const cfg = grp(db, ctx.jid);
     const n = parseInt(ctx.args[0], 10);
     if (!n) return `Warn limit: *${cfg.warnLimit || DEFAULT_WARN_LIMIT}*\nUsage: ${ctx.prefix}warnlimit 3`;
     if (n < 1 || n > 20) throw new Error('Choose a number from 1 to 20.');
@@ -244,6 +257,7 @@ function register(add) {
   }, { group: true, admin: true });
 
   add('stickcmd', 'Owner', '<command> | del | list', 'Reply to a sticker to make it run a command, e.g. stickcmd vv', (ctx) => {
+    const { db, save } = hmOf(ctx.sock);
     const arg = (ctx.args[0] || '').toLowerCase().replace(/^[^a-z0-9]+/, '');
     if (arg === 'list') return `Bound stickers: ${Object.keys(db.stickers).length}\n` + Object.values(db.stickers).map((c) => '› ' + c).join('\n');
     const st = ctx.msg && (ctx.msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.stickerMessage);
@@ -256,7 +270,13 @@ function register(add) {
     return `✅ That sticker now runs *${ctx.prefix}${arg}*`;
   }, { owner: true, aliases: ['setcmd'] });
 
+  add('unlink', 'Owner', '', 'Disconnect this bot from your WhatsApp and delete your saved data', async (ctx) => {
+    await ctx.reply('👋 Disconnecting this bot from your WhatsApp. Your saved data will be deleted. Open the pairing website to link again anytime.');
+    setTimeout(() => { ctx.sock.logout().catch((e) => console.error('[unlink]', e.message)); }, 1500);
+  }, { owner: true });
+
   add('alwaysonline', 'Owner', 'on|off', 'Keep the bot showing as online', (ctx) => {
+    const { db, save } = hmOf(ctx.sock);
     const v = (ctx.args[0] || '').toLowerCase();
     if (!['on', 'off'].includes(v)) return `Always online is *${db.alwaysOnline ? 'ON' : 'OFF'}*.\nUsage: ${ctx.prefix}alwaysonline on|off`;
     db.alwaysOnline = v === 'on';
@@ -267,14 +287,18 @@ function register(add) {
 }
 
 /* ---------- boot (index.js) ---------- */
-function boot(sock) {
+function boot(sock, dir) {
+  sock.hm = newState(dir);
   applyOnline(sock);
-  sock.ev.on('connection.update', ({ connection }) => { if (connection === 'open') applyOnline(sock); });
+  sock.ev.on('connection.update', ({ connection }) => {
+    if (connection === 'open') applyOnline(sock);
+    if (connection === 'close') clearInterval(sock.hm.timer);
+  });
 }
 
 /* ---------- passive: moderation (index.js, every message) ---------- */
-const meta = new Map();
 async function groupMeta(sock, jid) {
+  const meta = hmOf(sock).meta;
   const h = meta.get(jid);
   if (h && Date.now() - h.t < 60000) return h.d;
   const d = await sock.groupMetadata(jid);
@@ -287,16 +311,17 @@ const unwrapContent = (m) => {
   return x;
 };
 /** returns a command string like "vv" when a bound sticker is sent by the owner, else null */
-function stickerCommand(m) {
+function stickerCommand(sock, m) {
   const st = unwrapContent(m).stickerMessage;
   if (!st) return null;
-  return db.stickers[Buffer.from(st.fileSha256 || []).toString('base64')] || null;
+  return hmOf(sock).db.stickers[Buffer.from(st.fileSha256 || []).toString('base64')] || null;
 }
 
 async function passive(sock, m) {
   try {
     const jid = m?.key?.remoteJid;
     if (!jid?.endsWith('@g.us') || m.key.fromMe) return;
+    const { db, save } = hmOf(sock);
     const cfg = db.groups[jid];
     if (!cfg || (cfg.antiGroupMention === 'off' && cfg.antiTag === 'off')) return;
     const raw = m.message || {};
