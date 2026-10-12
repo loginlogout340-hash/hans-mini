@@ -263,6 +263,8 @@ function createBot({ number, dir, onLoggedOut }) {
         open = true;
         everOpen = true;
         retry = 0;
+        // the owner is shown by name (OWNER_NAME overrides it for every user), not by number
+        config.ownerName = (process.env.OWNER_NAME || sock.user?.name || '').trim();
         log('connected as', sock.user?.id);
         ui.welcome(sock, config, commands.length).catch((e) => console.error(`[${number}] welcome error:`, e.message));
       }
