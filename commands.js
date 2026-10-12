@@ -312,14 +312,15 @@ const toggle = (name, key, label, desc) =>
     return `✅ ${label} turned *${v.toUpperCase()}*.`;
   }, { owner: true });
 toggle('autostatus', 'autoStatus', 'Auto view status', 'Automatically view (mark as seen) your contacts\' statuses');
-add('autolikestatus', 'Owner', 'on|off|emoji <emoji>', 'Automatically react to your contacts\' statuses', (ctx) => {
+add('autolikestatus', 'Owner', 'on|off|emoji <emoji|random>', 'Automatically react to your contacts\' statuses', (ctx) => {
   const v = (ctx.args[0] || '').toLowerCase();
   if (v === 'emoji') {
-    if (!ctx.args[1]) throw new Error(`Usage: ${ctx.prefix}autolikestatus emoji 🔥`);
-    ctx.config.likeEmoji = ctx.args[1]; ctx.config.save();
-    return `✅ Status reaction emoji set to ${ctx.args[1]}`;
+    if (!ctx.args[1]) throw new Error(`Usage: ${ctx.prefix}autolikestatus emoji 🔥\n${ctx.prefix}autolikestatus emoji random`);
+    const em = /^random$/i.test(ctx.args[1]) ? 'random' : ctx.args[1];
+    ctx.config.likeEmoji = em; ctx.config.save();
+    return em === 'random' ? '✅ Status reactions will now use a random emoji each time 🎲' : `✅ Status reaction emoji set to ${em}`;
   }
-  if (!['on', 'off'].includes(v)) return `Auto like status is currently *${ctx.config.autoLikeStatus ? 'ON' : 'OFF'}* (emoji ${ctx.config.likeEmoji}).\nUsage: ${ctx.prefix}autolikestatus on|off\n${ctx.prefix}autolikestatus emoji 🔥`;
+  if (!['on', 'off'].includes(v)) return `Auto like status is currently *${ctx.config.autoLikeStatus ? 'ON' : 'OFF'}* (emoji ${ctx.config.likeEmoji}).\nUsage: ${ctx.prefix}autolikestatus on|off\n${ctx.prefix}autolikestatus emoji 🔥\n${ctx.prefix}autolikestatus emoji random`;
   ctx.config.autoLikeStatus = v === 'on';
   if (v === 'on') ctx.config.autoStatus = true; // reacting needs the status to be viewed
   ctx.config.save();
