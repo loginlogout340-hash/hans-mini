@@ -1,6 +1,7 @@
 # Hans-Mini
+by 𝙷𝚊𝚗𝚜𝚘𝚗 ✪
 
-A small WhatsApp bot with 81 commands, built on Baileys. Files: `index.js`, `commands.js`, `media.js`, `package.json`, `Dockerfile`.
+A WhatsApp bot with 113 commands and still improving, built on Baileys. Files: `index.js`, `commands.js`, `media.js`, `package.json`, `Dockerfile`.
 
 ## Settings (environment variables)
 
@@ -14,7 +15,7 @@ A small WhatsApp bot with 81 commands, built on Baileys. Files: `index.js`, `com
 | `TIMEZONE` | no | Default `Africa/Accra` |
 | `AUTO_STATUS` | no | `on` to automatically view contacts' statuses |
 | `AUTO_LIKE_STATUS` | no | `on` to automatically react to statuses |
-| `LIKE_EMOJI` | no | Reaction emoji (default 💚) |
+| `LIKE_EMOJI` | no | Reaction emoji (default💙) |
 | `ANTI_VIEWONCE` | no | `on` to copy view-once media to the owner chat |
 | `ANTI_DELETE` | no | `on` to send deleted messages to the owner chat |
 | `SESSION_DIR` | no | Where the login is saved (default `./session`) |
@@ -37,7 +38,7 @@ Utility: calc, time, date, weather, convert, crypto, define, translate, wiki, co
 Text: upper, lower, title, reverse, mock, clap, wordcount, b64e, b64d, binary, unbinary, morse, unmorse, rot13, palindrome, repeat, hash
 Fun: 8ball, flip, dice, choose, truth, dare, pickup, wyr, riddle, love, rate, joke, fact, advice, quote
 Group: groupinfo, admins, tagall, hidetag, kick, add, promote, demote, mute, unmute, link, revoke, setname, setdesc, leave, delete, getpp
-Owner: mode, autostatus, autolikestatus, antiviewonce, antidelete, retrieve, restart
+Owner: mode, autostatus, autolikestatus, antiviewonce, antidelete, retrieve, restart and more.....
 
 Many commands also have short aliases (see `.help <command>`).
 
