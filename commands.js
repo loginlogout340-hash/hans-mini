@@ -42,7 +42,7 @@ const MORSE_REV = Object.fromEntries(Object.entries(MORSE).map(([k, v]) => [v, k
 const CRYPTO_IDS = { btc: 'bitcoin', eth: 'ethereum', bnb: 'binancecoin', sol: 'solana', xrp: 'ripple', ada: 'cardano', doge: 'dogecoin', usdt: 'tether', ltc: 'litecoin', trx: 'tron', dot: 'polkadot', matic: 'matic-network', ton: 'the-open-network' };
 
 // ---------- GENERAL ----------
-add('menu', 'General', '', 'Show all commands', (ctx) => {
+const plainMenu = (ctx) => {
   const cats = {};
   for (const c of commands) (cats[c.category] = cats[c.category] || []).push(c);
   let out = `╭─「 *${ctx.config.botName}* 」\n│ Prefix: ${ctx.prefix}   Mode: ${ctx.config.mode}\n│ Commands: ${commands.length}\n╰──────────\n`;
@@ -51,6 +51,11 @@ add('menu', 'General', '', 'Show all commands', (ctx) => {
   }
   out += `\nType ${ctx.prefix}help <command> for details.`;
   return out;
+};
+// .menu sends the bot's default picture with the banner, then the command list (plain text if the picture/UI fails)
+add('menu', 'General', '', 'Show all commands', async (ctx) => {
+  try { await require('./ui').menuRun(commands)(ctx); }
+  catch (e) { console.error('[menu]', e.message); return plainMenu(ctx); }
 }, { aliases: ['commands', 'list'] });
 
 add('help', 'General', '<command>', 'Explain how to use a command', (ctx) => {
@@ -88,12 +93,6 @@ add('calc', 'Utility', '<expression>', 'Calculator: + - * / % ^ ( ) sqrt sin cos
   return `🧮 ${ctx.text} = *${+result.toFixed(10)}*`;
 }, { aliases: ['math'] });
 
-add('time', 'Utility', '[timezone]', 'Current time, e.g. time Asia/Tokyo (default: bot timezone)', (ctx) => {
-  const tz = ctx.text || ctx.config.timezone;
-  try {
-    return `🕒 ${tz}\n` + new Date().toLocaleString('en-GB', { timeZone: tz, dateStyle: 'full', timeStyle: 'medium' });
-  } catch { throw new Error('Unknown timezone. Use a name like Africa/Accra or Europe/London.'); }
-});
 add('date', 'Utility', '', "Today's date", (ctx) => '📅 ' + new Date().toLocaleDateString('en-GB', { timeZone: ctx.config.timezone, dateStyle: 'full' }));
 
 add('weather', 'Utility', '<city>', 'Current weather for a city', async (ctx) => {
@@ -164,12 +163,6 @@ add('bible', 'Utility', '<reference>', 'Bible verse, e.g. bible john 3:16', asyn
   return `📖 *${d.reference}*\n${d.text.trim()}`;
 }, { aliases: ['verse'] });
 
-add('shorten', 'Utility', '<url>', 'Shorten a link', async (ctx) => {
-  need(ctx, `Usage: ${ctx.prefix}shorten https://example.com/very/long`);
-  const t = await http.text('https://is.gd/create.php?format=simple&url=' + encodeURIComponent(ctx.args[0]));
-  if (!t.startsWith('http')) throw new Error(t.trim());
-  return '🔗 ' + t.trim();
-}, { aliases: ['short'] });
 
 add('qr', 'Utility', '<text or link>', 'Make a QR code image', async (ctx) => {
   need(ctx, `Usage: ${ctx.prefix}qr https://example.com`);
@@ -184,28 +177,17 @@ add('password', 'Utility', '[length]', 'Generate a strong random password (8-64)
   return '🔐 `' + p + '`';
 }, { aliases: ['pass'] });
 
-add('uuid', 'Utility', '', 'Generate a random UUID', () => '🆔 ' + crypto.randomUUID());
-add('random', 'Utility', '[min] [max]', 'Random number (default 1-100)', (ctx) => {
-  let a = parseInt(ctx.args[0]), b = parseInt(ctx.args[1]);
-  if (isNaN(a)) { a = 1; b = 100; } else if (isNaN(b)) { b = a; a = 1; }
-  if (a > b) [a, b] = [b, a];
-  return `🎲 ${crypto.randomInt(a, b + 1)}`;
-}, { aliases: ['rand'] });
 
 // ---------- TEXT TOOLS ----------
 const textOf = (ctx) => ctx.text || ctx.quoted?.text || '';
 const textCmd = (name, usage, desc, fn, aliases = []) =>
   add(name, 'Text', usage, desc, (ctx) => { const t = textOf(ctx); if (!t) throw new Error(`Usage: ${ctx.prefix}${name} ${usage} (or reply to a message)`); return fn(t, ctx); }, { aliases });
 
-textCmd('upper', '<text>', 'UPPERCASE text', (t) => t.toUpperCase(), ['uppercase']);
-textCmd('lower', '<text>', 'lowercase text', (t) => t.toLowerCase(), ['lowercase']);
 textCmd('title', '<text>', 'Title Case text', (t) => t.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()));
 textCmd('reverse', '<text>', 'Reverse text', (t) => [...t].reverse().join(''), ['rev']);
 textCmd('mock', '<text>', 'sPoNgEbOb mOcKiNg tExT', (t) => [...t.toLowerCase()].map((c, i) => (i % 2 ? c.toUpperCase() : c)).join(''));
 textCmd('clap', '<text>', 'Put 👏 between words', (t) => t.trim().split(/\s+/).join(' 👏 ') + ' 👏');
 textCmd('wordcount', '<text>', 'Count words and characters', (t) => `📝 Words: ${t.trim().split(/\s+/).length}\nCharacters: ${t.length}\nWithout spaces: ${t.replace(/\s/g, '').length}`, ['count', 'wc']);
-textCmd('b64e', '<text>', 'Base64 encode', (t) => Buffer.from(t).toString('base64'), ['base64']);
-textCmd('b64d', '<base64>', 'Base64 decode', (t) => { const out = Buffer.from(t.trim(), 'base64').toString('utf8'); if (!out) throw new Error('Not valid Base64.'); return out; });
 textCmd('binary', '<text>', 'Text to binary', (t) => [...Buffer.from(t)].map((b) => b.toString(2).padStart(8, '0')).join(' '));
 textCmd('unbinary', '<binary>', 'Binary to text', (t) => {
   const bytes = t.trim().split(/\s+/);
@@ -215,13 +197,6 @@ textCmd('unbinary', '<binary>', 'Binary to text', (t) => {
 textCmd('morse', '<text>', 'Text to Morse code', (t) => t.toLowerCase().split('').map((c) => (c === ' ' ? '/' : MORSE[c] || '')).filter(Boolean).join(' '));
 textCmd('unmorse', '<morse>', 'Morse code to text (use / between words)', (t) => t.trim().split(' ').map((c) => (c === '/' ? ' ' : MORSE_REV[c] || '?')).join(''));
 textCmd('rot13', '<text>', 'ROT13 cipher', (t) => t.replace(/[a-z]/gi, (c) => String.fromCharCode((c <= 'Z' ? 90 : 122) >= (c = c.charCodeAt(0) + 13) ? c : c - 26)));
-textCmd('palindrome', '<text>', 'Is it a palindrome?', (t) => { const s = t.toLowerCase().replace(/[^a-z0-9]/g, ''); return s && s === [...s].reverse().join('') ? '✅ Yes, it is a palindrome.' : '❌ No, it is not a palindrome.'; });
-add('repeat', 'Text', '<times> <text>', 'Repeat text up to 20 times', (ctx) => {
-  const n = Math.min(20, parseInt(ctx.args[0]));
-  const t = ctx.args.slice(1).join(' ');
-  if (!n || !t) throw new Error(`Usage: ${ctx.prefix}repeat 5 hello`);
-  return Array(n).fill(t).join('\n');
-});
 add('hash', 'Text', '<md5|sha1|sha256|sha512> <text>', 'Hash some text', (ctx) => {
   const algo = (ctx.args[0] || '').toLowerCase();
   const t = ctx.args.slice(1).join(' ');
