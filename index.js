@@ -179,14 +179,20 @@ async function watchers(sock, msg) {
 
 async function handleStatus(sock, msg) {
   if (msg.key.fromMe || !msg.message) return;
-  const poster = msg.key.participant || msg.participant;
-  if (!poster) return;
+  // ignore old statuses replayed after a reconnect (older than 1 hour)
+  const ts = Number(msg.messageTimestamp || 0);
+  if (ts && Date.now() / 1000 - ts > 3600) return;
+  const posters = [msg.key.participant, msg.key.participantAlt, msg.participant].filter(Boolean).map(norm);
+  if (!posters.length) return;
   try {
-    if (config.autoStatus) await sock.readMessages([msg.key]);
+    // viewing the status first makes the like show up reliably
+    if (config.autoStatus || config.autoLikeStatus) await sock.readMessages([msg.key]).catch((e) => console.error('status read error:', e.message));
     if (config.autoLikeStatus) {
+      const list = [...new Set([...posters, norm(sock.user.id), sock.user?.lid ? norm(sock.user.lid) : null].filter(Boolean))];
       await sock.sendMessage('status@broadcast',
         { react: { key: msg.key, text: config.likeEmoji } },
-        { statusJidList: [poster, norm(sock.user.id)] });
+        { statusJidList: list });
+      console.log('[status] liked status from', posters[0]);
     }
   } catch (e) { console.error('status handler error:', e.message); }
 }
@@ -247,15 +253,14 @@ async function start() {
   });
 
   sock.ev.on('messages.upsert', ({ messages, type }) => {
-    if (type !== 'notify') return;
     for (const msg of messages) {
-      if (msg.key.remoteJid === 'status@broadcast') handleStatus(sock, msg);
-      else {
-        remember(msg);
-        watchers(sock, msg);
-        extra.passive(sock, msg);
-        handle(sock, withStickerCmd(msg)).catch((e) => console.error('handler error:', e));
-      }
+      // statuses can arrive as "notify" or "append", so they are handled before the type check
+      if (msg.key.remoteJid === 'status@broadcast') { handleStatus(sock, msg); continue; }
+      if (type !== 'notify') continue;
+      remember(msg);
+      watchers(sock, msg);
+      extra.passive(sock, msg);
+      handle(sock, withStickerCmd(msg)).catch((e) => console.error('handler error:', e));
     }
   });
 }
