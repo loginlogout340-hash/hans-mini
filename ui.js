@@ -16,16 +16,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const norm = (j) => String(j || '').replace(/:\d+@/, '@');
 const LINE = '◁──────────────────▷';
 
+let cachedImg; // picture is read once, then reused for every .menu
 function imageSource() {
   if (process.env.MENU_IMAGE) return { url: process.env.MENU_IMAGE };
+  if (cachedImg) return cachedImg;
   // menu.* wins; otherwise the first image file found next to index.js is used
   let files = [];
   try { files = fs.readdirSync(__dirname); } catch { /* ignore */ }
   const images = files.filter((f) => /\.(jpe?g|png|webp)$/i.test(f));
   images.sort((a, b) => (/^menu\./i.test(b) ? 1 : 0) - (/^menu\./i.test(a) ? 1 : 0));
   for (const f of images) {
-    try { return fs.readFileSync(path.join(__dirname, f)); } catch { /* try next */ }
+    try { cachedImg = fs.readFileSync(path.join(__dirname, f)); return cachedImg; } catch { /* try next */ }
   }
+  console.error('[ui] no picture found next to ui.js (' + __dirname + '). Upload menu.jpg or set MENU_IMAGE.');
   return null;
 }
 
@@ -148,4 +151,4 @@ async function welcome(sock, config, count) {
   await getStarted(sock, jid, config);
 }
 
-module.exports = { init, install, register, welcome, fromListReply };
+module.exports = { init, install, register, welcome, fromListReply, menuRun };
