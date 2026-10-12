@@ -10,6 +10,8 @@
  * Optional Railway variables for music:
  *   YT_COOKIES_FILE = path to a cookies.txt   (strongest fix for the "not a bot" block)
  *   YT_PROXY        = http://user:pass@host:port  (residential proxy, if you ever get one)
+ *   MALVIN_API      = base link of the download API (no trailing slash)
+ *   MALVIN_KEY      = its API key   -> when both are set, play/song/video use the API first
  */
 const fs = require('fs');
 const os = require('os');
@@ -19,6 +21,43 @@ const yts = require('yt-search');
 
 const DB_FILE = path.join(process.env.SESSION_DIR || './session', '..', 'extra-settings.json');
 const MAX_MB = 40;
+
+/* ---------- download API (optional: MALVIN_API + MALVIN_KEY) ---------- */
+const apiBase = () => (process.env.MALVIN_API || '').trim().replace(/\/+$/, '');
+const apiOn = () => !!(apiBase() && process.env.MALVIN_KEY);
+async function apiGet(route, params, timeoutMs = 30000) {
+  const url = new URL(apiBase() + route);
+  url.searchParams.set('apikey', process.env.MALVIN_KEY);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  let j = null;
+  try { j = await r.json(); } catch { /* not JSON */ }
+  if (!r.ok || j?.status === false) throw new Error(String(j?.error || j?.message || 'Download service returned HTTP ' + r.status).slice(0, 200));
+  return j?.data;
+}
+async function fetchBuf(url, maxMb) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(180000) });
+  if (!r.ok) throw new Error('Download failed (HTTP ' + r.status + ').');
+  if (Number(r.headers.get('content-length') || 0) > maxMb * 1048576) throw new Error(`File is larger than ${maxMb}MB.`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length > maxMb * 1048576) throw new Error(`File is larger than ${maxMb}MB.`);
+  if (buf.length < 10240) throw new Error('The downloaded file is too small. Try again.');
+  return buf;
+}
+const YT_URL = /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/i;
+// turns any audio into a normal mp3 with ffmpeg (falls back to the original if that fails)
+function toMp3(buf) {
+  const base = path.join(os.tmpdir(), 'hm-cv-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+  return new Promise((ok) => {
+    try { fs.writeFileSync(base + '.in', buf); } catch { return ok(buf); }
+    execFile('ffmpeg', ['-y', '-i', base + '.in', '-vn', '-acodec', 'libmp3lame', '-q:a', '5', base + '.mp3'], { timeout: 120000 }, (err) => {
+      let out = buf;
+      if (!err) { try { out = fs.readFileSync(base + '.mp3'); } catch { /* keep original */ } }
+      for (const e of ['in', 'mp3']) fs.unlink(base + '.' + e, () => {});
+      ok(out);
+    });
+  });
+}
 const num = (j = '') => String(j).split('@')[0].split(':')[0];
 
 /* ---------- persistent store ---------- */
@@ -106,7 +145,14 @@ async function music(ctx, asFile) {
   if (!v) throw new Error('No results found.');
   const card = `🎵 *${v.title}*\n👤 ${v.author?.name || '-'}\n⏱ ${v.timestamp || '-'}\n🔗 ${v.url}`;
   if (v.thumbnail) await ctx.sendImage(v.thumbnail, card); else await ctx.reply(card);
-  const buf = await audioOf(v.url);
+  let buf;
+  if (apiOn()) {
+    try {
+      const d = await apiGet('/download/clutchplay', { query: /^https?:\/\//i.test(q) ? v.title : q });
+      if (d?.audio) buf = await fetchBuf(d.audio, MAX_MB);
+    } catch (e) { console.error('[extra] download API failed, using yt-dlp:', e.message); }
+  }
+  if (!buf) buf = await audioOf(v.url);
   const quoted = { quoted: ctx.msg };
   if (asFile) {
     const name = v.title.replace(/[\\/:*?"<>|]/g, '').slice(0, 80);
@@ -129,8 +175,42 @@ function applyOnline(sock) {
 /* ---------- commands ---------- */
 function register(add) {
   require('./ui').register(add);
+  require('./dl').register(add);
   add('play', 'Media', '<name or link>', 'Search YouTube and send the song as audio', (ctx) => music(ctx, false), { aliases: ['music'] });
   add('song', 'Media', '<name or link>', 'Search YouTube and send the song as a downloadable file', (ctx) => music(ctx, true), { aliases: ['mp3'] });
+
+  add('video', 'Media', '<name or link>', 'Search YouTube and send the video', async (ctx) => {
+    if (!apiOn()) throw new Error('Video download is not set up yet. Add MALVIN_API and MALVIN_KEY in the Railway variables.');
+    const q = ctx.text || ctx.quoted?.text;
+    if (!q) throw new Error(`Usage: ${ctx.prefix}video <name or YouTube link>`);
+    let url = q;
+    if (!YT_URL.test(q)) {
+      const found = await apiGet('/download/clutchplay', { query: q });
+      if (!found?.url) throw new Error('No video found for your query.');
+      url = found.url;
+    }
+    const r = await apiGet('/download/clutchyt', { url, quality: '720' });
+    if (!r?.video) throw new Error('Failed to fetch the video. Try again.');
+    const buf = await fetchBuf(r.video, 100);
+    const title = r.title || 'Video';
+    const quoted = { quoted: ctx.msg };
+    if (buf.length > 50 * 1048576) await ctx.sock.sendMessage(ctx.jid, { document: buf, mimetype: 'video/mp4', fileName: title.replace(/[^\w\s.-]/g, '').slice(0, 80) + '.mp4', caption: '📄 ' + title }, quoted);
+    else await ctx.sock.sendMessage(ctx.jid, { video: buf, mimetype: 'video/mp4', caption: '🎥 ' + title }, quoted);
+  }, { aliases: ['ytmp4', 'mp4'] });
+
+  add('sendaudio', 'Media', '<audio link>', 'Download audio from a direct link and send it', async (ctx) => {
+    const u = (ctx.text || ctx.quoted?.text || '').trim();
+    if (!/^https?:\/\//i.test(u)) throw new Error(`Usage: ${ctx.prefix}sendaudio <audio link>`);
+    const buf = await toMp3(await fetchBuf(u, MAX_MB));
+    await ctx.sock.sendMessage(ctx.jid, { audio: buf, mimetype: 'audio/mpeg', ptt: false }, { quoted: ctx.msg });
+  }, { aliases: ['sendmp3', 'dlmp3', 'dlaudio'] });
+
+  add('sendvideo', 'Media', '<video link>', 'Download a video from a direct link and send it as a file', async (ctx) => {
+    const u = (ctx.text || ctx.quoted?.text || '').trim();
+    if (!/^https?:\/\//i.test(u)) throw new Error(`Usage: ${ctx.prefix}sendvideo <video link>`);
+    const buf = await fetchBuf(u, 100);
+    await ctx.sock.sendMessage(ctx.jid, { document: buf, mimetype: 'video/mp4', fileName: 'Video.mp4' }, { quoted: ctx.msg });
+  }, { aliases: ['sendmp4', 'dlmp4', 'dvideo'] });
 
   add('react', 'Fun', '<emoji>', 'Reply to a message with this command to react to it', async (ctx) => {
     const emoji = (ctx.text.match(/\p{Extended_Pictographic}(\uFE0F|\u200D\p{Extended_Pictographic})*/u) || [])[0];
@@ -269,4 +349,4 @@ async function passive(sock, m) {
   } catch (e) { console.error('[extra]', e.message); }
 }
 
-module.exports = { register, boot, passive, stickerCommand };
+module.exports = { register, boot, passive, stickerCommand, apiOn, apiBase, apiGet, fetchBuf, toMp3, MAX_MB };
