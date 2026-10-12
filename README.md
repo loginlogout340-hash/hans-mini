@@ -15,7 +15,7 @@ A WhatsApp bot with 113 commands and still improving, built on Baileys. Files: `
 | `TIMEZONE` | no | Default `Africa/Accra` |
 | `AUTO_STATUS` | no | `on` to automatically view contacts' statuses |
 | `AUTO_LIKE_STATUS` | no | `on` to automatically react to statuses |
-| `LIKE_EMOJI` | no | Reaction emoji (default💙) |
+| `LIKE_EMOJI` | no | Reaction emoji (default💚) |
 | `ANTI_VIEWONCE` | no | `on` to copy view-once media to the owner chat |
 | `ANTI_DELETE` | no | `on` to send deleted messages to the owner chat |
 | `SESSION_DIR` | no | Where the login is saved (default `./session`) |
