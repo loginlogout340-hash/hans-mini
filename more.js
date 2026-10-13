@@ -88,7 +88,7 @@ async function trivia() {
 /* ---------------- register ---------------- */
 function register(add) {
   /* ----- about the owner ----- */
-  add('owner', 'Info', '', 'About the owner of this bot', async (ctx) => {
+  add('ownerinfo', 'Info', '', 'About the owner of this bot', async (ctx) => {
     const card = ownerCard();
     // optional picture: upload a file named owner.jpg (or owner.png) next to this file in the repo
     const file = ['owner.jpg', 'owner.jpeg', 'owner.png'].map((f) => path.join(__dirname, f)).find((f) => fs.existsSync(f));
@@ -97,7 +97,7 @@ function register(add) {
       return; // picture + card sent, nothing more to say
     }
     return card;
-  }, { aliases: ['about', 'creator', 'dev', 'developer'] });
+  }, { aliases: ['hanson', 'creator', 'dev', 'developer'] });
 
   /* ----- sudo ----- */
   add('setsudo', 'Owner', '@user (or reply)', 'Give someone owner powers on your bot (sudo)', (ctx) => {
