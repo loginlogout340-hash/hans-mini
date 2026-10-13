@@ -2,7 +2,7 @@
 /**
  * Hans-Mini extra commands (per-user settings live in sock.hm.db, saved by extra.js):
  *   setsudo / delsudo / getsudo, antisticker, welcome, goodbye, games (rps, guess, trivia, ttt),
- *   pp, gpp, block, unblock, savestatus, owner (about the owner)
+ *   pp, gpp, block, unblock, savestatus, ownerinfo
  * extra.js loads this file:  register(add, { hmOf, grp }), boot(sock, { hmOf }).
  * The anti-sticker detection itself lives in extra.js (passive); here is only the command.
  * bot.js gives every command: ctx.isMainOwner (real owner, not sudo) and ctx.downloadMedia() (picture).
@@ -16,11 +16,11 @@ const jidOf = (n) => n + '@s.whatsapp.net';
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
 const hmOf = (sock) => sock.hm;
 
-/* ---------------- owner card (edit these lines to change what .owner shows) ---------------- */
+/* ---------------- owner card (edit these lines to change what .ownerinfo shows) ---------------- */
 const OWNER = {
   name: '𝙷𝚊𝚗𝚜𝚘𝚗 ✪',
   bio: 'My determination set me apart',
-  phone: '233204908710',              // 0204908710 in international format (Ghana +233)
+  phone: '233204908710',                  // 0204908710 in international format (Ghana +233)
   github: process.env.OWNER_GITHUB || '', // optional: set OWNER_GITHUB on Railway, e.g. https://github.com/yourname
 };
 
@@ -87,6 +87,8 @@ async function trivia() {
 
 /* ---------------- register ---------------- */
 function register(add) {
+  registerExtra(add);
+
   /* ----- about the owner ----- */
   add('ownerinfo', 'Info', '', 'About the owner of this bot', async (ctx) => {
     const card = ownerCard();
@@ -265,6 +267,7 @@ function register(add) {
 
 /* ---------------- boot: welcome / goodbye ---------------- */
 function boot(sock) {
+  startScheduler(sock);
   sock.ev.on('group-participants.update', async (ev) => {
     try {
       const { id, participants, action } = ev;
@@ -288,4 +291,205 @@ function boot(sock) {
   });
 }
 
-module.exports = { register, boot };
+/* ================= antilink, multiprefix, scheduled messages ================= */
+const LINK_RE = /(?:https?:\/\/|www\.)\S+|(?:chat\.whatsapp\.com|wa\.me|t\.me|bit\.ly)\/\S+|\b[a-z0-9][a-z0-9-]{1,40}\.(?:com|net|org|io|co|me|xyz|info|link|gg|app|site|online|ly)\b(?:\/\S*)?/i;
+
+/* ----- time helpers (the bot's timezone, default Africa/Accra) ----- */
+function tzParts(ms, tz) {
+  const f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const o = {};
+  for (const p of f.formatToParts(new Date(ms))) o[p.type] = p.value;
+  return { y: +o.year, mo: +o.month, d: +o.day, h: +o.hour, mi: +o.minute };
+}
+/** the moment (ms) when the clock in timezone tz shows y-mo-d h:mi */
+function zoned(y, mo, d, h, mi, tz) {
+  const want = Date.UTC(y, mo - 1, d, h, mi);
+  let guess = want;
+  for (let i = 0; i < 2; i++) {
+    const p = tzParts(guess, tz);
+    guess += want - Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi);
+  }
+  return guess;
+}
+function parseWhen(input, tz) {
+  let s = String(input || '').trim().toLowerCase();
+  let daily = false;
+  if (/^daily\s+/.test(s)) { daily = true; s = s.replace(/^daily\s+/, ''); }
+  const now = Date.now();
+  let m;
+  if ((m = s.match(/^in\s+(\d+)\s*(m|min|mins|minutes?|h|hrs?|hours?|d|days?)$/))) {
+    const n = parseInt(m[1], 10), u = m[2][0];
+    return { at: now + n * (u === 'm' ? 60000 : u === 'h' ? 3600000 : 86400000), daily: false };
+  }
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})$/))) {
+    return { at: zoned(+m[1], +m[2], +m[3], +m[4], +m[5], tz), daily };
+  }
+  if ((m = s.match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/))) {
+    let h = +m[1]; const mi = +m[2];
+    if (m[3] === 'pm' && h < 12) h += 12;
+    if (m[3] === 'am' && h === 12) h = 0;
+    if (h > 23 || mi > 59) return null;
+    const t = tzParts(now, tz);
+    let at = zoned(t.y, t.mo, t.d, h, mi, tz);
+    if (at <= now + 30000) at = zoned(t.y, t.mo, t.d + 1, h, mi, tz); // already passed today: tomorrow
+    return { at, daily };
+  }
+  return null;
+}
+const fmtTime = (ms, tz) => new Date(ms).toLocaleString('en-GB', { timeZone: tz, dateStyle: 'medium', timeStyle: 'short' });
+const MULTI_HINT = '. ! # / $ ~ ,';
+
+function registerExtra(add) {
+  /* ----- anti link ----- */
+  add('antilink', 'Group', 'on|delete|warn|kick|off', 'Delete, warn or kick members who send links (admins are exempt)', (ctx) => {
+    const { db, save } = hmOf(ctx.sock);
+    const cfg = (db.groups[ctx.jid] ||= { antiGroupMention: 'off', antiTag: 'off' });
+    const v = (ctx.args[0] || '').toLowerCase();
+    if (!['on', 'delete', 'warn', 'kick', 'off'].includes(v)) {
+      return `Anti link: *${cfg.antiLink || 'off'}*\nUsage: ${ctx.prefix}antilink on|delete|warn|kick|off\n(delete = remove the message, warn = delete + warning, kick after the warn limit, kick = remove at once)`;
+    }
+    cfg.antiLink = v === 'on' ? 'delete' : v;
+    save();
+    return `✅ Anti link is now *${cfg.antiLink}*`;
+  }, { group: true, admin: true, botAdmin: true, aliases: ['nolink'] });
+
+  /* ----- prefixes ----- */
+  add('multiprefix', 'Owner', 'on|off', `Answer to several prefixes (${MULTI_HINT}) as well as your main one`, (ctx) => {
+    const v = (ctx.args[0] || '').toLowerCase();
+    if (!['on', 'off'].includes(v)) return `Multi prefix is *${ctx.config.multiPrefix ? 'ON' : 'OFF'}* (${MULTI_HINT}).\nUsage: ${ctx.prefix}multiprefix on|off`;
+    ctx.config.multiPrefix = v === 'on';
+    ctx.config.save();
+    return v === 'on' ? `✅ Multi prefix ON. Commands now work with: ${MULTI_HINT}` : `✅ Multi prefix OFF. Only *${ctx.config.prefix}* works.`;
+  }, { owner: true, aliases: ['mprefix'] });
+
+  add('setprefix', 'Owner', '<symbol>', 'Change your main prefix (1 to 3 symbols, no letters or numbers)', (ctx) => {
+    const p = (ctx.args[0] || '').trim();
+    if (!p) return `Your prefix is *${ctx.config.prefix}*\nUsage: ${ctx.prefix}setprefix !`;
+    if (!/^[^\sA-Za-z0-9]{1,3}$/u.test(p)) throw new Error('Use 1 to 3 symbols, like ! # / $ (no letters, numbers or spaces).');
+    ctx.config.prefix = p;
+    ctx.config.save();
+    return `✅ Prefix changed to *${p}*. Now type ${p}menu`;
+  }, { owner: true });
+
+  /* ----- scheduled messages ----- */
+  const sch = (sock) => (hmOf(sock).db.schedules ||= []);
+
+  add('schedule', 'Owner', '<when> | <number or me> | <message>', 'Send a message later, e.g. schedule 18:30 | 233241234567 | Happy birthday!', (ctx) => {
+    const [whenRaw, toRaw, ...rest] = ctx.text.split('|');
+    const text = rest.join('|').trim();
+    const p = ctx.prefix;
+    if (!whenRaw || !toRaw || !text) {
+      return `⏰ *Schedule a message*\n${p}schedule <when> | <who> | <message>\n\n*when*: 18:30  ·  6:30pm  ·  in 2h  ·  in 30m  ·  2026-10-20 08:00  ·  daily 07:00\n*who*: a number with country code, me, or here\n\nExample:\n${p}schedule 18:30 | 233241234567 | Happy birthday!\n\nSee them: ${p}schedules   Cancel: ${p}unschedule <id>`;
+    }
+    const w = parseWhen(whenRaw, ctx.config.timezone);
+    if (!w) throw new Error('I could not read the time. Use 18:30, 6:30pm, in 2h, in 30m, 2026-10-20 08:00 or daily 07:00.');
+    if (w.at <= Date.now()) throw new Error('That time has already passed.');
+    if (w.at > Date.now() + 366 * 86400000) throw new Error('Pick a time within the next year.');
+    const who = toRaw.trim().toLowerCase();
+    let to;
+    if (who === 'me') to = jidOf(ctx.config.owners[0]);
+    else if (who === 'here') to = ctx.jid;
+    else {
+      const d = who.replace(/\D/g, '');
+      if (d.length < 8 || d.length > 15) throw new Error('Give the number with the country code (example 233241234567), or write me or here.');
+      to = jidOf(d);
+    }
+    if (text.length > 1000) throw new Error('The message is too long (1000 characters at most).');
+    const list = sch(ctx.sock);
+    if (list.length >= 20) throw new Error(`You already have 20 scheduled messages. Remove one with ${p}unschedule <id>.`);
+    const id = Math.random().toString(36).slice(2, 6);
+    list.push({ id, at: w.at, to, text, daily: !!w.daily });
+    hmOf(ctx.sock).save();
+    return `✅ Scheduled (id *${id}*)\n🕒 ${fmtTime(w.at, ctx.config.timezone)}${w.daily ? ' (every day)' : ''}\n👤 ${to.endsWith('@g.us') ? 'this group' : '+' + num(to)}\n💬 ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`;
+  }, { owner: true, aliases: ['sched', 'later'] });
+
+  add('schedules', 'Owner', '', 'List your scheduled messages', (ctx) => {
+    const list = sch(ctx.sock).slice().sort((a, b) => a.at - b.at);
+    if (!list.length) return `No scheduled messages. Add one with ${ctx.prefix}schedule`;
+    return '⏰ *Scheduled messages*\n' + list.map((s) => `*${s.id}*  ${fmtTime(s.at, ctx.config.timezone)}${s.daily ? ' (daily)' : ''}\n   → ${s.to.endsWith('@g.us') ? 'a group' : '+' + num(s.to)}: ${s.text.slice(0, 50)}${s.text.length > 50 ? '...' : ''}`).join('\n') + `\n\nCancel: ${ctx.prefix}unschedule <id>  (or all)`;
+  }, { owner: true, aliases: ['scheduled'] });
+
+  add('unschedule', 'Owner', '<id|all>', 'Cancel a scheduled message', (ctx) => {
+    const id = (ctx.args[0] || '').toLowerCase();
+    if (!id) throw new Error(`Usage: ${ctx.prefix}unschedule <id>  (see ${ctx.prefix}schedules)`);
+    const list = sch(ctx.sock);
+    const before = list.length;
+    hmOf(ctx.sock).db.schedules = id === 'all' ? [] : list.filter((s) => s.id !== id);
+    hmOf(ctx.sock).save();
+    const gone = before - hmOf(ctx.sock).db.schedules.length;
+    return gone ? `🗑️ Cancelled ${gone} scheduled message(s).` : 'ℹ️ No scheduled message with that id.';
+  }, { owner: true, aliases: ['cancelschedule'] });
+}
+
+/** checks every 15 seconds and sends what is due; failed sends are retried (dropped after 1 hour late) */
+function startScheduler(sock) {
+  const hm = hmOf(sock);
+  clearInterval(hm.schedTimer);
+  let busy = false;
+  const tick = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const list = hm.db.schedules || [];
+      const now = Date.now();
+      let changed = false;
+      for (const s of [...list]) {
+        if (s.at > now) continue;
+        try {
+          await sock.sendMessage(s.to, { text: s.text });
+          if (s.daily) { while (s.at <= now) s.at += 86400000; } else list.splice(list.indexOf(s), 1);
+          changed = true;
+        } catch (e) {
+          if (now - s.at > 3600000) { list.splice(list.indexOf(s), 1); changed = true; console.error('[more] scheduled message dropped:', e.message); }
+        }
+      }
+      if (changed) hm.save();
+    } finally { busy = false; }
+  };
+  hm.schedTimer = setInterval(tick, 15000);
+  sock.ev.on('connection.update', ({ connection }) => { if (connection === 'close') clearInterval(hm.schedTimer); });
+}
+
+/* ----- passive: anti link ----- */
+async function passive(sock, m) {
+  try {
+    const jid = m?.key?.remoteJid;
+    if (!jid?.endsWith('@g.us') || m.key.fromMe) return;
+    const { db, save } = hmOf(sock);
+    const cfg = db.groups[jid];
+    const mode = cfg?.antiLink || 'off';
+    if (mode === 'off') return;
+    const c = unwrap(m.message);
+    const text = [c.conversation, c.extendedTextMessage?.text, c.extendedTextMessage?.matchedText, c.imageMessage?.caption, c.videoMessage?.caption, c.documentMessage?.caption].filter(Boolean).join(' ');
+    if (!text || !LINK_RE.test(text)) return;
+    const sender = m.key.participant || m.participant;
+    if (!sender) return;
+    const ids = [sender, m.key.participantAlt].filter(Boolean).map(num);
+    if (ids.some((x) => x === hmOf(sock).owner || (db.sudo || []).includes(x))) return; // owner and sudo may send links
+    const md = await groupMeta(sock, jid);
+    if (isAdminOf(md, ids)) return;
+    if (!isAdminOf(md, [sock.user?.id, sock.user?.lid].filter(Boolean).map(num))) return; // the bot must be admin to act
+    await sock.sendMessage(jid, { delete: m.key }).catch(() => {});
+    const tag = num(sender);
+    if (mode === 'kick') {
+      await sock.groupParticipantsUpdate(jid, [sender], 'remove').catch(() => {});
+      await sock.sendMessage(jid, { text: `🚫 @${tag} removed for sending links.`, mentions: [sender] });
+    } else if (mode === 'warn') {
+      const limit = cfg.warnLimit || DEFAULT_WARN_LIMIT;
+      const w = (db.warns[jid] ||= {});
+      const n = (w['l:' + tag] = (w['l:' + tag] || 0) + 1);
+      if (n >= limit) {
+        delete w['l:' + tag]; save();
+        await sock.groupParticipantsUpdate(jid, [sender], 'remove').catch(() => {});
+        await sock.sendMessage(jid, { text: `🚨 @${tag} removed.\nReason: links\nWarns: ${n}/${limit}`, mentions: [sender] });
+      } else {
+        save();
+        await sock.sendMessage(jid, { text: `⚠️ @${tag}, links are not allowed here!\nWarns: ${n}/${limit}.`, mentions: [sender] });
+      }
+    } else {
+      await sock.sendMessage(jid, { text: `⚠️ @${tag}, links are not allowed here.`, mentions: [sender] });
+    }
+  } catch (e) { console.error('[more] antilink:', e.message); }
+}
+
+module.exports = { register, boot, passive };
