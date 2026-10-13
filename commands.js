@@ -293,7 +293,7 @@ add('getpp', 'Group', '[@user]', "Get someone's profile picture", async (ctx) =>
   let url;
   try { url = await ctx.sock.profilePictureUrl(t, 'image'); } catch { throw new Error('No profile picture found (or it is private).'); }
   await ctx.sendImage(url, 'Profile picture');
-}, { aliases: ['pp'] });
+});
 
 // ---------- OWNER ----------
 add('mode', 'Owner', '<public|private>', 'Switch who can use the bot', (ctx) => {
@@ -333,7 +333,7 @@ add('retrieve', 'Owner', '[here]', 'Reply to a view-once or media message to get
   await ctx.forwardQuoted(here ? ctx.jid : ctx.ownerJid, '📥 *Retrieved*');
   if (!here && ctx.jid !== ctx.ownerJid) return '✅ Sent to your owner chat.';
 }, { owner: true, aliases: ['vv', 'readvo'] });
-add('restart', 'Owner', '', 'Restart the bot', async (ctx) => { await ctx.reply('♻️ Restarting...'); setTimeout(() => process.exit(0), 1000); }, { owner: true, aliases: ['reboot'] });
+add('restart', 'Owner', '', 'Restart the bot', async (ctx) => { await ctx.reply('♻️ Restarting your bot...'); setTimeout(() => ctx.sock.end(new Error('restart')), 800); }, { owner: true, aliases: ['reboot'] });
 
 require('./extra').register(add);
 
