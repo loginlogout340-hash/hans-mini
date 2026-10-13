@@ -35,7 +35,11 @@ setInterval(() => {
   const now = Date.now();
   for (const [k, v] of hits) if (!v.some((t) => now - t < 3600000)) hits.delete(k);
 }, 600000).unref();
-const lastPair = new Map(); // number -> time of last attempt
+
+// the wait only starts after a code was really issued (a failed try can be repeated at once)
+const PAIR_WAIT_MS = 10000;
+const lastPair = new Map(); // number -> time the last code was issued
+const inFlight = new Set(); // numbers whose code is being made right now (blocks double taps)
 
 const ipOf = (req) => String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
 
@@ -81,14 +85,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/pair') {
-      if (limited('p:' + ip, 6, 600000)) return send(res, 429, { error: 'Too many attempts. Please wait a few minutes and try again.' });
+      if (limited('p:' + ip, 12, 600000)) return send(res, 429, { error: 'Too many attempts. Please wait a few minutes and try again.' });
       const body = await readJson(req);
       if (!accessOk(body.access || '')) return send(res, 403, { error: 'Wrong access code.' });
       const number = String(body.number || '').replace(/\D/g, '');
-      if (Date.now() - (lastPair.get(number) || 0) < 20000) return send(res, 429, { error: 'Please wait a little before asking for another code.' });
-      lastPair.set(number, Date.now());
-      const code = await manager.pair(number);
-      return send(res, 200, { code: (code.match(/.{1,4}/g) || [code]).join('-'), number });
+      if (inFlight.has(number)) return send(res, 429, { error: 'Your code is being made. Please wait a few seconds.' });
+      const wait = PAIR_WAIT_MS - (Date.now() - (lastPair.get(number) || 0));
+      if (wait > 0) return send(res, 429, { error: `Please wait ${Math.ceil(wait / 1000)} seconds before asking for another code.` });
+      inFlight.add(number);
+      try {
+        const code = await manager.pair(number);
+        lastPair.set(number, Date.now());
+        return send(res, 200, { code: (code.match(/.{1,4}/g) || [code]).join('-'), number });
+      } finally {
+        inFlight.delete(number);
+      }
     }
 
     send(res, 404, { error: 'Not found.' });
