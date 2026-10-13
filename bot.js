@@ -28,7 +28,7 @@ ui.install(registry, commands); // styled menu with the default picture
 // .autolikestatus emoji random  ->  a different emoji from this list for every status
 const STATUS_EMOJIS = ['❤️', '🔥', '😂', '😍', '👏', '🥰', '💯', '😭', '🤣', '🙏', '👌', '💪', '🤩', '😎', '🥳', '✨', '💀', '🤯', '😤', '💅', '👀', '🎉', '😈', '🤫', '🫶'];
 const SAVED_KEYS = ['autoStatus', 'autoLikeStatus', 'likeEmoji', 'mode', 'antiViewOnce', 'antiDelete', 'welcomed'];
-const STORE_MAX = 300; // recent messages kept per user (for antidelete)
+const STORE_MAX = 600; // recent messages kept per user (for antidelete)
 
 const norm = (j) => String(j || '').replace(/:\d+@/, '@');
 const digits = (j) => String(j || '').split('@')[0].split(':')[0].replace(/\D/g, '');
@@ -260,6 +260,9 @@ function createBot({ number, dir, onLoggedOut }) {
       logger,
       browser: B.Browsers ? B.Browsers.ubuntu('Chrome') : ['Ubuntu', 'Chrome', '22.04.4'],
       markOnlineOnConnect: false,
+      // when a phone cannot decrypt a message it asks for it again; without this the chat shows
+      // "Waiting for this message. This may take a while."
+      getMessage: async (key) => store.get(key.id)?.msg?.message || undefined,
     });
     current = sock;
 
@@ -299,8 +302,8 @@ function createBot({ number, dir, onLoggedOut }) {
       for (const msg of messages) {
         // statuses can arrive as "notify" or "append", so they are handled before the type check
         if (msg.key.remoteJid === 'status@broadcast') { handleStatus(sock, msg); continue; }
+        remember(msg); // also the bot's own sent messages (type "append"), so they can be re-sent on request
         if (type !== 'notify') continue;
-        remember(msg);
         watchers(sock, msg);
         extra.passive(sock, msg);
         handle(sock, ui.fromListReply(withStickerCmd(sock, msg))).catch((e) => console.error(`[${number}] handler error:`, e));
