@@ -2,16 +2,40 @@
 /**
  * Hans-Mini extra commands (per-user settings live in sock.hm.db, saved by extra.js):
  *   setsudo / delsudo / getsudo, antisticker, welcome, goodbye, games (rps, guess, trivia, ttt),
- *   pp, gpp, block, unblock, savestatus
+ *   pp, gpp, block, unblock, savestatus, owner (about the owner)
  * extra.js loads this file:  register(add, { hmOf, grp }), boot(sock, { hmOf }).
  * The anti-sticker detection itself lives in extra.js (passive); here is only the command.
  * bot.js gives every command: ctx.isMainOwner (real owner, not sudo) and ctx.downloadMedia() (picture).
  */
+const fs = require('fs');
+const path = require('path');
+
 const num = (j = '') => String(j).split('@')[0].split(':')[0].replace(/\D/g, '');
 const norm = (j) => String(j || '').replace(/:\d+@/, '@');
 const jidOf = (n) => n + '@s.whatsapp.net';
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
 const hmOf = (sock) => sock.hm;
+
+/* ---------------- owner card (edit these lines to change what .owner shows) ---------------- */
+const OWNER = {
+  name: '𝙷𝚊𝚗𝚜𝚘𝚗 ✪',
+  bio: 'My determination set me apart',
+  phone: '233204908710',              // 0204908710 in international format (Ghana +233)
+  github: process.env.OWNER_GITHUB || '', // optional: set OWNER_GITHUB on Railway, e.g. https://github.com/yourname
+};
+
+function ownerCard() {
+  const lines = [
+    '╭─❖ *OWNER INFO* ❖─╮',
+    '',
+    `👤 *Name:* ${OWNER.name}`,
+    `💬 *Bio:* ${OWNER.bio}`,
+    `📞 *WhatsApp:* wa.me/${OWNER.phone}`,
+  ];
+  if (OWNER.github) lines.push(`💻 *GitHub:* ${OWNER.github}`);
+  lines.push('', '╰──────────────╯');
+  return lines.join('\n');
+}
 
 /** who the command refers to: @mention, replied message, a number, or the private chat itself */
 function targets(ctx) {
@@ -63,6 +87,18 @@ async function trivia() {
 
 /* ---------------- register ---------------- */
 function register(add) {
+  /* ----- about the owner ----- */
+  add('owner', 'Info', '', 'About the owner of this bot', async (ctx) => {
+    const card = ownerCard();
+    // optional picture: upload a file named owner.jpg (or owner.png) next to this file in the repo
+    const file = ['owner.jpg', 'owner.jpeg', 'owner.png'].map((f) => path.join(__dirname, f)).find((f) => fs.existsSync(f));
+    if (file) {
+      await ctx.sock.sendMessage(ctx.jid, { image: fs.readFileSync(file), caption: card }, { quoted: ctx.msg });
+      return; // picture + card sent, nothing more to say
+    }
+    return card;
+  }, { aliases: ['about', 'creator', 'dev', 'developer'] });
+
   /* ----- sudo ----- */
   add('setsudo', 'Owner', '@user (or reply)', 'Give someone owner powers on your bot (sudo)', (ctx) => {
     if (!ctx.isMainOwner) throw new Error('Only the real owner can add sudo users.');
