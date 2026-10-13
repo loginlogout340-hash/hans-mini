@@ -27,7 +27,8 @@ ui.install(registry, commands); // styled menu with the default picture
 
 // .autolikestatus emoji random  ->  a different emoji from this list for every status
 const STATUS_EMOJIS = ['❤️', '🔥', '😂', '😍', '👏', '🥰', '💯', '😭', '🤣', '🙏', '👌', '💪', '🤩', '😎', '🥳', '✨', '💀', '🤯', '😤', '💅', '👀', '🎉', '😈', '🤫', '🫶'];
-const SAVED_KEYS = ['autoStatus', 'autoLikeStatus', 'likeEmoji', 'mode', 'antiViewOnce', 'antiDelete', 'welcomed'];
+const SAVED_KEYS = ['autoStatus', 'autoLikeStatus', 'likeEmoji', 'mode', 'antiViewOnce', 'antiDelete', 'welcomed', 'prefix', 'multiPrefix'];
+const MULTI_PREFIXES = ['.', '!', '#', '/', '$', '~', ','];
 const STORE_MAX = 600; // recent messages kept per user (for antidelete)
 
 const norm = (j) => String(j || '').replace(/:\d+@/, '@');
@@ -57,6 +58,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   const config = {
     botName: process.env.BOT_NAME || 'Hans-Mini',
     prefix: process.env.PREFIX || '.',
+    multiPrefix: false,
     mode: (process.env.MODE || 'public').toLowerCase(), // public | private
     owners: [number],
     sessionDir: path.join(dir, 'session'),
@@ -121,9 +123,11 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
 
     const message = unwrap(msg.message);
     const body = getText(message).trim();
-    if (!body.startsWith(config.prefix)) return;
+    const prefixes = config.multiPrefix ? [config.prefix, ...MULTI_PREFIXES.filter((p) => p !== config.prefix)] : [config.prefix];
+    const usedPrefix = prefixes.find((p) => body.startsWith(p));
+    if (!usedPrefix) return;
 
-    const m = body.slice(config.prefix.length).match(/^(\S+)\s*([\s\S]*)$/);
+    const m = body.slice(usedPrefix.length).match(/^(\S+)\s*([\s\S]*)$/);
     if (!m) return;
     const cmd = registry.get(m[1].toLowerCase());
     if (!cmd) return;
@@ -153,7 +157,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
 
     const send = (content) => sock.sendMessage(jid, content, { quoted: msg });
     const ctx = {
-      sock, msg, jid, isGroup, sender, isOwner, isMainOwner, quoted, config, prefix: config.prefix,
+      sock, msg, jid, isGroup, sender, isOwner, isMainOwner, quoted, config, prefix: usedPrefix,
       text, args: text ? text.split(/\s+/) : [],
       mentioned: (ctxInfo.mentionedJid || []).map(norm),
       isAdmin: false, isBotAdmin: false,
