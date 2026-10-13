@@ -139,7 +139,7 @@ function register(add) {
   add('start', 'General', '', 'Show the Get Started quick-actions list', (ctx) => getStarted(ctx.sock, ctx.jid, ctx.config), { aliases: ['getstarted'] });
   add('settings', 'Owner', '', 'Show the current bot settings', (ctx) => {
     const c = ctx.config, p = ctx.prefix, on = (v) => (v ? '✅ ON' : '❌ OFF');
-    return `⚙️ *Settings*\n${LINE}\nMode: *${c.mode}*   (${p}mode public|private)\nPrefix: *${p}*\nAuto view status: ${on(c.autoStatus)}   (${p}autostatus)\nAuto like status: ${on(c.autoLikeStatus)} ${c.likeEmoji}   (${p}autolikestatus)\nAnti view-once: ${on(c.antiViewOnce)}   (${p}antiviewonce)\nAnti delete: ${on(c.antiDelete)}   (${p}antidelete)\nAlways online: (${p}alwaysonline on|off)\nGroup guards: (${p}antitag, ${p}antigroupmention, ${p}antisticker)\nGroup messages: (${p}welcome, ${p}goodbye)\nSudo users: ${(ctx.sock.hm?.db?.sudo || []).length}   (${p}setsudo, ${p}delsudo)\n${LINE}`;
+    return `⚙️ *Settings*\n${LINE}\nMode: *${c.mode}*   (${p}mode public|private)\nPrefix: *${p}*\nAuto view status: ${on(c.autoStatus)}   (${p}autostatus)\nAuto like status: ${on(c.autoLikeStatus)} ${c.likeEmoji}   (${p}autolikestatus)\nAnti view-once: ${on(c.antiViewOnce)}   (${p}antiviewonce)\nAnti delete: ${on(c.antiDelete)}   (${p}antidelete)\nAlways online: (${p}alwaysonline on|off)\nGroup guards: (${p}antitag, ${p}antigroupmention, ${p}antisticker, ${p}antilink)\nGroup messages: (${p}welcome, ${p}goodbye)\nMulti prefix: ${on(c.multiPrefix)}   (${p}multiprefix, ${p}setprefix)\nScheduled messages: ${(ctx.sock.hm?.db?.schedules || []).length}   (${p}schedule)\nSudo users: ${(ctx.sock.hm?.db?.sudo || []).length}   (${p}setsudo, ${p}delsudo)\n${LINE}`;
   }, { owner: true, aliases: ['config'] });
 }
 
