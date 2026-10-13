@@ -19,7 +19,7 @@ const ui = require('./ui');
 const registry = new Map();
 for (const c of commands) {
   for (const n of [c.name, ...c.aliases]) {
-    if (registry.has(n)) throw new Error('Duplicate command name: ' + n);
+    if (registry.has(n)) { console.warn('Duplicate command name ignored: ' + n + ' (the first one is kept)'); continue; }
     registry.set(n, c);
   }
 }
@@ -91,6 +91,7 @@ function createBot({ number, dir, onLoggedOut }) {
   let everOpen = false;
   let retry = 0;
   let forward = null;
+  let download = null;
   const store = new Map();
   const groupCache = new Map();
 
@@ -132,7 +133,9 @@ function createBot({ number, dir, onLoggedOut }) {
     const sender = norm(senderRaw);
     const senderIds = [sender, msg.key.participantAlt, msg.key.remoteJidAlt].filter(Boolean).map(norm);
 
-    const isOwner = msg.key.fromMe || senderIds.some((s) => config.owners.includes(digits(s)));
+    const isMainOwner = msg.key.fromMe || senderIds.some((s) => config.owners.includes(digits(s)));
+    const sudo = sock.hm?.db?.sudo || []; // extra owners added with .setsudo
+    const isOwner = isMainOwner || senderIds.some((s) => sudo.includes(digits(s)));
     if (config.mode === 'private' && !isOwner) return;
 
     const ctxInfo = message.extendedTextMessage?.contextInfo || message.imageMessage?.contextInfo || message.videoMessage?.contextInfo || {};
@@ -146,7 +149,7 @@ function createBot({ number, dir, onLoggedOut }) {
 
     const send = (content) => sock.sendMessage(jid, content, { quoted: msg });
     const ctx = {
-      sock, msg, jid, isGroup, sender, isOwner, quoted, config, prefix: config.prefix,
+      sock, msg, jid, isGroup, sender, isOwner, isMainOwner, quoted, config, prefix: config.prefix,
       text, args: text ? text.split(/\s+/) : [],
       mentioned: (ctxInfo.mentionedJid || []).map(norm),
       isAdmin: false, isBotAdmin: false,
@@ -155,6 +158,13 @@ function createBot({ number, dir, onLoggedOut }) {
       sendImage: (url, caption) => send({ image: { url }, caption }),
       getGroup: () => getGroup(sock, jid),
       ownerJid: ownerJid(),
+      // the picture sent with the command, or the one it replies to
+      downloadMedia: async () => {
+        if (!download) throw new Error('The bot is not ready yet. Try again.');
+        if (message.imageMessage) return download(msg);
+        if (!ctxInfo.quotedMessage) throw new Error('Reply to a picture, or send a picture with this command as its caption.');
+        return download({ key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage });
+      },
       forwardQuoted: async (to, header) => {
         if (!ctxInfo.quotedMessage) throw new Error('Reply to the message you want to retrieve.');
         try {
@@ -255,7 +265,8 @@ function createBot({ number, dir, onLoggedOut }) {
 
     sock.ev.on('creds.update', saveCreds);
     extra.boot(sock, dir);
-    forward = makeForwarder((m) => B.downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage }));
+    download = (m) => B.downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+    forward = makeForwarder(download);
 
     sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
       if (sock !== current) return; // an old socket
