@@ -17,7 +17,23 @@ const PAIR_WINDOW_MS = 4 * 60 * 1000; // how long a pairing code stays usable be
 
 class UserError extends Error {}
 
-const bots = new Map(); // number -> { bot, timer }
+const bots = new Map(); // number -> { bot, timer, fresh, announced }
+
+/* ---------- admin: who is allowed, who is banned, alerts ---------- */
+const ADMIN = String(process.env.ADMIN_NUMBER || '').replace(/\D/g, '');
+const ADMIN_FILE = path.join(DATA_DIR, 'admin.json');
+let admin = { banned: [], watch: false };
+try { admin = { ...admin, ...JSON.parse(fs.readFileSync(ADMIN_FILE, 'utf8')) }; } catch { /* first run */ }
+const saveAdmin = () => { try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(ADMIN_FILE, JSON.stringify(admin)); } catch (e) { console.error('could not save admin.json:', e.message); } };
+
+/** sends a WhatsApp message to the admin, from the admin's own bot (message yourself) */
+function notifyAdmin(text) {
+  console.log('[admin]', text.replace(/\n/g, ' | '));
+  if (!ADMIN) return;
+  const e = bots.get(ADMIN);
+  if (!e || !e.bot.isOpen()) return;
+  e.bot.sendText(ADMIN + '@s.whatsapp.net', text).catch(() => {});
+}
 const dirFor = (n) => path.join(USERS_DIR, n);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -50,12 +66,23 @@ function remove(number, wipe) {
 }
 
 function startBot(number) {
+  let entry;
   const bot = createBot({
     number,
     dir: dirFor(number),
     onLoggedOut: () => { console.log(`[${number}] removed after logout`); remove(number, true); },
+    onEvent: (type, d) => {
+      if (type === 'connected' && entry?.fresh && !entry.announced) {
+        entry.announced = true;
+        notifyAdmin(`🟢 *New user linked*\n+${number}${d.name ? ' (' + d.name + ')' : ''}\nUsers: ${bots.size}/${MAX_USERS}`);
+      } else if (type === 'loggedout' && number !== ADMIN) {
+        notifyAdmin(`🔴 *User unlinked*\n+${number}`);
+      } else if (type === 'command' && admin.watch && number !== ADMIN) {
+        notifyAdmin(`👀 +${number}'s bot: ${d.by === number ? 'owner' : '+' + d.by} used .${d.name}${d.group ? ' (in a group)' : ''}`);
+      }
+    },
   });
-  const entry = { bot, timer: null };
+  entry = { bot, timer: null, fresh: false, announced: false };
   bots.set(number, entry);
   return entry;
 }
@@ -71,12 +98,15 @@ async function pair(rawNumber) {
   if (readPaired(path.join(dirFor(number), 'session'))) {
     throw new UserError('This number is already linked to the bot.');
   }
+  if (admin.banned.includes(number)) throw new UserError('This number is not allowed to use the bot.');
   if (bots.size >= MAX_USERS) throw new UserError('The bot is full right now. Please try again later.');
 
   const entry = startBot(number);
+  entry.fresh = true; // a brand-new user: the admin gets an alert when the link completes
   try {
     await entry.bot.start();
     const code = await entry.bot.requestPairingCode();
+    notifyAdmin(`📲 Pairing code requested for +${number}`);
     // if the code is never used, free the space again
     entry.timer = setTimeout(() => {
       if (!entry.bot.everOpen()) { console.log(`[${number}] pairing expired`); remove(number, true); }
@@ -116,4 +146,41 @@ async function restoreAll() {
 
 const stats = () => ({ users: bots.size, max: MAX_USERS });
 
-module.exports = { pair, status, restoreAll, stats, UserError, MAX_USERS, DATA_DIR };
+/* ---------- admin tools (used by the admin commands in admin.js) ---------- */
+const isAdmin = (n) => !!ADMIN && String(n) === ADMIN;
+function users() {
+  return [...bots.entries()].map(([number, e]) => ({
+    number, name: e.bot.config.ownerName || '', online: e.bot.isOpen(), linked: e.bot.everOpen(),
+    commands: e.bot.stats.commands, lastActive: e.bot.stats.lastActive, since: e.bot.stats.since,
+  }));
+}
+const cleanDigits = (raw) => String(raw || '').replace(/\D/g, '');
+
+/** logs the user's bot out of WhatsApp and deletes their data. 'removed' | 'deleted' | 'notfound' */
+async function removeUser(raw, ban) {
+  const number = cleanDigits(raw);
+  if (number.length < 8) throw new UserError('Give the full number with the country code.');
+  if (isAdmin(number)) throw new UserError('You cannot remove yourself.');
+  if (ban && !admin.banned.includes(number)) { admin.banned.push(number); saveAdmin(); }
+  const e = bots.get(number);
+  if (!e) {
+    if (fs.existsSync(dirFor(number))) { remove(number, true); return 'deleted'; }
+    return 'notfound';
+  }
+  try { await e.bot.sendText(number + '@s.whatsapp.net', '🚫 Your access to this bot was removed by the admin.'); } catch { /* offline */ }
+  try { await e.bot.logout(); } catch { /* offline: cleaned up below */ }
+  setTimeout(() => { if (bots.get(number) === e) remove(number, true); }, 4000);
+  return 'removed';
+}
+function unban(raw) {
+  const number = cleanDigits(raw);
+  const had = admin.banned.includes(number);
+  admin.banned = admin.banned.filter((n) => n !== number);
+  saveAdmin();
+  return had;
+}
+const banned = () => [...admin.banned];
+function setWatch(on) { admin.watch = !!on; saveAdmin(); }
+const isWatching = () => admin.watch;
+
+module.exports = { pair, status, restoreAll, stats, users, removeUser, unban, banned, setWatch, isWatching, isAdmin, UserError, MAX_USERS, DATA_DIR };
