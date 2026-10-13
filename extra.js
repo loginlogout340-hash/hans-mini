@@ -73,10 +73,10 @@ function newState(dir) {
     clearTimeout(t);
     t = setTimeout(() => { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(db)); } catch { /* ignore */ } }, 500);
   };
-  return { db, save, timer: null, meta: new Map() };
+  return { db, save, timer: null, meta: new Map(), owner: dir ? path.basename(dir) : '', games: { guess: {}, trivia: {} } };
 }
 const hmOf = (sock) => sock.hm || (sock.hm = newState(null));
-const grp = (db, jid) => (db.groups[jid] ||= { antiGroupMention: 'off', antiTag: 'off' });
+const grp = (db, jid) => (db.groups[jid] ||= { antiGroupMention: 'off', antiTag: 'off', antiSticker: 'off' });
 const DEFAULT_WARN_LIMIT = 3;
 
 /* ---------- music (yt-dlp) ---------- */
@@ -187,6 +187,7 @@ function applyOnline(sock) {
 function register(add) {
   require('./ui').register(add);
   require('./dl').register(add);
+  require('./more').register(add, { hmOf, grp });
   add('play', 'Media', '<name or link>', 'Search YouTube and send the song as audio', (ctx) => music(ctx, false), { aliases: ['music'] });
   add('song', 'Media', '<name or link>', 'Search YouTube and send the song as a downloadable file', (ctx) => music(ctx, true), { aliases: ['mp3'] });
 
@@ -244,6 +245,7 @@ function register(add) {
     }, { group: true, admin: true, botAdmin: true });
   guard('antigroupmention', 'antiGroupMention', 'Anti group mention', 'Delete, warn or kick for messages that mention the group in a status');
   guard('antitag', 'antiTag', 'Anti tag', 'Delete, warn or kick for mass tagging by non-admins');
+  guard('antisticker', 'antiSticker', 'Anti sticker', 'Delete, warn or kick for stickers sent by non-admins');
 
   add('warnlimit', 'Group', '<number>', 'How many warnings before a member is kicked (default 3)', (ctx) => {
     const { db, save } = hmOf(ctx.sock);
@@ -271,6 +273,7 @@ function register(add) {
   }, { owner: true, aliases: ['setcmd'] });
 
   add('unlink', 'Owner', '', 'Disconnect this bot from your WhatsApp and delete your saved data', async (ctx) => {
+    if (!ctx.isMainOwner) throw new Error('Only the real owner can unlink this bot.');
     await ctx.reply('👋 Disconnecting this bot from your WhatsApp. Your saved data will be deleted. Open the pairing website to link again anytime.');
     setTimeout(() => { ctx.sock.logout().catch((e) => console.error('[unlink]', e.message)); }, 1500);
   }, { owner: true });
@@ -289,6 +292,7 @@ function register(add) {
 /* ---------- boot (index.js) ---------- */
 function boot(sock, dir) {
   sock.hm = newState(dir);
+  require('./more').boot(sock, { hmOf });
   applyOnline(sock);
   sock.ev.on('connection.update', ({ connection }) => {
     if (connection === 'open') applyOnline(sock);
@@ -323,7 +327,7 @@ async function passive(sock, m) {
     if (!jid?.endsWith('@g.us') || m.key.fromMe) return;
     const { db, save } = hmOf(sock);
     const cfg = db.groups[jid];
-    if (!cfg || (cfg.antiGroupMention === 'off' && cfg.antiTag === 'off')) return;
+    if (!cfg || (cfg.antiGroupMention === 'off' && cfg.antiTag === 'off' && (cfg.antiSticker || 'off') === 'off')) return;
     const raw = m.message || {};
     const c = unwrapContent(m);
     if (process.env.DEBUG_EXTRA) console.log('[extra] group msg keys:', Object.keys(raw), 'inner:', Object.keys(c));
@@ -333,7 +337,8 @@ async function passive(sock, m) {
     const mentions = Object.values(c).map((v) => v?.contextInfo?.mentionedJid).find((a) => Array.isArray(a)) || [];
     const txt = c.conversation || c.extendedTextMessage?.text || c.imageMessage?.caption || c.videoMessage?.caption || '';
     const isTag = mentions.length >= 5 || /(^|\s)@(everyone|all)\b/i.test(txt);
-    const mode = isGM ? cfg.antiGroupMention : isTag ? cfg.antiTag : 'off';
+    const isSticker = !isGM && !isTag && !!c.stickerMessage;
+    const mode = isGM ? cfg.antiGroupMention : isTag ? cfg.antiTag : isSticker ? (cfg.antiSticker || 'off') : 'off';
     if (mode === 'off') return;
     const sender = m.key.participant || m.participant;
     const md = await groupMeta(sock, jid);
@@ -341,6 +346,7 @@ async function passive(sock, m) {
     const botIds = [sock.user?.id, sock.user?.lid].filter(Boolean).map(num);
     const isAdminOf = (ids) => md.participants.some((p) => p.admin && [p.id, p.lid, p.jid, p.phoneNumber].filter(Boolean).map(num).some((x) => ids.includes(x)));
     const tagName = num(sender);
+    if (isSticker) { const ok = [hmOf(sock).owner, ...(db.sudo || [])]; if (senderIds.some((x) => ok.includes(x))) return; } // the owner and sudo users may send stickers
     if (isAdminOf(senderIds)) {
       if (isGM) await sock.sendMessage(jid, { text: `Admin @${tagName} dropped a status mention. Admins get a pass, but keep it minimal.`, mentions: [sender] });
       return;
@@ -351,7 +357,7 @@ async function passive(sock, m) {
       return;
     }
     await sock.sendMessage(jid, { delete: m.key }).catch(() => {});
-    const why = isGM ? 'group mentions' : 'mass tagging';
+    const why = isGM ? 'group mentions' : isSticker ? 'stickers' : 'mass tagging';
     if (mode === 'kick') {
       await sock.groupParticipantsUpdate(jid, [sender], 'remove').catch(() => {});
       await sock.sendMessage(jid, { text: `🚫 @${num(sender)} removed for ${why}.`, mentions: [sender] });
