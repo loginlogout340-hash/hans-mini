@@ -156,14 +156,23 @@ async function music(ctx, asFile) {
   if (!v) throw new Error('No results found.');
   const card = `🎵 *${v.title}*\n👤 ${v.author?.name || '-'}\n⏱ ${v.timestamp || '-'}\n🔗 ${v.url}`;
   if (v.thumbnail) await ctx.sendImage(v.thumbnail, card); else await ctx.reply(card);
-  let buf;
+  let buf, apiErr = '';
   if (apiOn()) {
     try {
       const d = await apiGet('/download/clutchplay', { query: /^https?:\/\//i.test(q) ? v.title : q });
       if (d?.audio) buf = await fetchBuf(d.audio, MAX_MB);
-    } catch (e) { console.error('[extra] download API failed, using yt-dlp:', e.message); }
+      else apiErr = 'it returned no audio';
+    } catch (e) { apiErr = e.message; console.error('[extra] download API failed, using yt-dlp:', e.message); }
   }
-  if (!buf) buf = await audioOf(v.url);
+  if (!buf) {
+    try { buf = await audioOf(v.url); }
+    catch (e) {
+      // say WHY, so the real problem (API settings) is visible instead of only the YouTube block
+      throw new Error(apiOn()
+        ? `The download service failed (${apiErr || 'unknown error'}) and the YouTube backup was blocked.\nCheck MALVIN_API and MALVIN_KEY in the Railway variables.`
+        : 'MALVIN_API and MALVIN_KEY are not both set in Railway, so the blocked YouTube method was used. Add both variables.');
+    }
+  }
   const quoted = { quoted: ctx.msg };
   if (asFile) {
     const name = v.title.replace(/[\\/:*?"<>|]/g, '').slice(0, 80);
