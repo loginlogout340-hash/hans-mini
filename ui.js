@@ -118,12 +118,19 @@ function menuRun(commands) {
     const cats = {};
     for (const c of commands) (cats[c.category] = cats[c.category] || []).push(c);
     const p = ctx.prefix;
-    await sendWithImage(ctx.sock, ctx.jid, banner(ctx.config, commands.length, false), { quoted: ctx.msg });
+    const head = banner(ctx.config, commands.length, false);
     let list = '';
     for (const [cat, items] of Object.entries(cats)) {
       list += `\n┏━━ *${cat.toUpperCase()}* ━━\n` + items.map((c) => `┃ › ${p}${c.name}`).join('\n') + '\n┗━━━━━━━━━━\n';
     }
     list += `\nType ${p}help <command> for details.`;
+    // ONE message: the picture with the banner AND the whole command list as its caption
+    const img = imageSource();
+    if (img) {
+      try { return void (await ctx.sock.sendMessage(ctx.jid, { image: img, caption: head + '\n' + list.trim() }, { quoted: ctx.msg })); }
+      catch (e) { console.error('[ui] one-message menu failed, sending in two parts:', e.message); }
+    }
+    await sendWithImage(ctx.sock, ctx.jid, head, { quoted: ctx.msg });
     await ctx.reply(list.trim());
   };
 }
