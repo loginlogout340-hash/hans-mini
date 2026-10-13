@@ -332,6 +332,7 @@ function stickerCommand(sock, m) {
 }
 
 async function passive(sock, m) {
+  require('./more').passive(sock, m); // anti link
   try {
     const jid = m?.key?.remoteJid;
     if (!jid?.endsWith('@g.us') || m.key.fromMe) return;
