@@ -147,7 +147,7 @@ function register(add) {
   /* ----- save a status ----- */
   add('savestatus', 'Owner', '(reply to a status)', 'Reply to a status with this to get a copy in your chat', async (ctx) => {
     await ctx.forwardQuoted(ctx.ownerJid, '📥 *Status saved*');
-    if (ctx.jid !== ctx.ownerJid) return '✅ Sent to your chat.';
+    // silent on purpose: no confirmation message in the chat
   }, { owner: true, aliases: ['sendme', 'statusdl', 'sendstatus'] });
 
   /* ----- games ----- */
