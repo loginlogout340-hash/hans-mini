@@ -1,7 +1,7 @@
 'use strict';
 /**
  * One WhatsApp bot per connected user.
- * createBot({ number, dir, onLoggedOut }) gives a bot with its own settings, session folder,
+ * createBot({ number, dir, onLoggedOut, onEvent }) gives a bot with its own settings, session folder,
  * message store and WhatsApp connection. The user's own number is the owner of their bot.
  *
  *   dir/session/    WhatsApp login (Baileys)
@@ -51,7 +51,9 @@ function loadBaileys() {
   })());
 }
 
-function createBot({ number, dir, onLoggedOut }) {
+function createBot({ number, dir, onLoggedOut, onEvent }) {
+  const stats = { since: Date.now(), commands: 0, lastActive: 0 }; // for the admin (.users)
+  const emit = (type, data) => { try { if (onEvent) onEvent(type, data || {}); } catch (e) { console.error(`[${number}] event error:`, e.message); } };
   const config = {
     botName: process.env.BOT_NAME || 'Hans-Mini',
     prefix: process.env.PREFIX || '.',
@@ -137,6 +139,8 @@ function createBot({ number, dir, onLoggedOut }) {
     const sudo = sock.hm?.db?.sudo || []; // extra owners added with .setsudo
     const isOwner = isMainOwner || senderIds.some((s) => sudo.includes(digits(s)));
     if (config.mode === 'private' && !isOwner) return;
+    stats.commands++; stats.lastActive = Date.now();
+    emit('command', { name: cmd.name, by: digits(senderIds[0]), group: isGroup });
 
     const ctxInfo = message.extendedTextMessage?.contextInfo || message.imageMessage?.contextInfo || message.videoMessage?.contextInfo || {};
     const qm = ctxInfo.quotedMessage ? unwrap(ctxInfo.quotedMessage) : null;
@@ -280,6 +284,7 @@ function createBot({ number, dir, onLoggedOut }) {
         // the owner is shown by name (OWNER_NAME overrides it for every user), not by number
         config.ownerName = (process.env.OWNER_NAME || sock.user?.name || '').trim();
         log('connected as', sock.user?.id);
+        emit('connected', { name: config.ownerName });
         ui.welcome(sock, config, commands.length).catch((e) => console.error(`[${number}] welcome error:`, e.message));
       }
       if (connection === 'close') {
@@ -289,6 +294,7 @@ function createBot({ number, dir, onLoggedOut }) {
         if (code === B.DisconnectReason.loggedOut) {
           stopped = true;
           log('logged out from WhatsApp');
+          emit('loggedout');
           Promise.resolve(onLoggedOut && onLoggedOut()).catch((e) => console.error(`[${number}] logout cleanup failed:`, e.message));
           return;
         }
@@ -331,7 +337,11 @@ function createBot({ number, dir, onLoggedOut }) {
     try { s.end(undefined); } catch { /* ignore */ }
   }
 
-  return { number, config, start: connect, stop, requestPairingCode, isOpen: () => open, everOpen: () => everOpen };
+  // used by the admin tools (manager.js)
+  const sendText = async (to, text) => { if (!current || !open) throw new Error('not connected'); return current.sendMessage(to, { text }); };
+  const logout = async () => { if (!current) throw new Error('not running'); return current.logout(); };
+
+  return { number, config, stats, start: connect, stop, requestPairingCode, sendText, logout, isOpen: () => open, everOpen: () => everOpen };
 }
 
 module.exports = { createBot, commandCount: commands.length };
