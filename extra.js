@@ -197,6 +197,7 @@ function register(add) {
   require('./ui').register(add);
   require('./dl').register(add);
   require('./more').register(add, { hmOf, grp });
+  require('./admin').register(add);
   add('play', 'Media', '<name or link>', 'Search YouTube and send the song as audio', (ctx) => music(ctx, false), { aliases: ['music'] });
   add('song', 'Media', '<name or link>', 'Search YouTube and send the song as a downloadable file', (ctx) => music(ctx, true), { aliases: ['mp3'] });
 
