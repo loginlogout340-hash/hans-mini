@@ -331,7 +331,7 @@ toggle('antidelete', 'antiDelete', 'Anti delete', 'Send you a copy of messages o
 add('retrieve', 'Owner', '[here]', 'Reply to a view-once or media message to get a copy (sent to your owner chat; add "here" to send it in this chat)', async (ctx) => {
   const here = (ctx.args[0] || '').toLowerCase() === 'here';
   await ctx.forwardQuoted(here ? ctx.jid : ctx.ownerJid, '📥 *Retrieved*');
-  if (!here && ctx.jid !== ctx.ownerJid) return '✅ Sent to your owner chat.';
+  // silent on purpose: no "sent" confirmation in the chat (only errors are shown)
 }, { owner: true, aliases: ['vv', 'readvo'] });
 add('restart', 'Owner', '', 'Restart the bot', async (ctx) => { await ctx.reply('♻️ Restarting your bot...'); setTimeout(() => ctx.sock.end(new Error('restart')), 800); }, { owner: true, aliases: ['reboot'] });
 
