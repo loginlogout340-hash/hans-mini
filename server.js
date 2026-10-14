@@ -9,6 +9,7 @@
  *   GET  /api/pay/verify   ?ref=...                      -> { code, number, expiresAt }
  *   POST /api/pay/webhook  (Paystack calls this)
  *   GET  /admin            your own page for manual codes and the price
+ *   GET  /pulse/<token>    a user's private Hans Pulse dashboard (link from the .pulse link command)
  *   GET  /health
  *
  * Railway variables:
@@ -26,6 +27,7 @@ const crypto = require('crypto');
 const manager = require('./manager');
 const page = require('./page');
 const codes = require('./codes');
+const pulse = require('./pulse');
 
 const BOT_NAME = process.env.BOT_NAME || 'Hans-Mini';
 const OWNER_CODES = (process.env.ACCESS_CODE || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -231,6 +233,13 @@ const server = http.createServer(async (req, res) => {
       let ev; try { ev = JSON.parse(raw); } catch { return send(res, 400, { error: 'Bad request.' }); }
       if (ev.event === 'charge.success') { try { fulfil(ev.data); } catch (e) { console.error('[pay] webhook:', e.message); } }
       return send(res, 200, 'ok');
+    }
+
+    /* ----- Hans Pulse dashboard (private link per user) ----- */
+    if (p.startsWith('/pulse/') || p.startsWith('/api/pulse/')) {
+      if (limited('pu:' + ip, 240, 600000)) return send(res, 429, { error: 'Too many requests. Wait a few minutes.' });
+      const r = await pulse.route(req, p, () => readJson(req));
+      if (r) return send(res, r.status, r.body, r.type);
     }
 
     /* ----- admin ----- */
