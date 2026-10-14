@@ -115,10 +115,14 @@ function fromListReply(msg) {
 
 function menuRun(commands) {
   return async (ctx) => {
+    // the Admin section is shown only on the admin's own bot, to its real owner
+    let isAdminBot = false;
+    try { isAdminBot = !!(process.env.ADMIN_NUMBER && ctx.isMainOwner && require('./manager').isAdmin(ctx.config.owners[0])); } catch { /* not admin */ }
+    const visible = commands.filter((c) => isAdminBot || String(c.category).toLowerCase() !== 'admin');
     const cats = {};
-    for (const c of commands) (cats[c.category] = cats[c.category] || []).push(c);
+    for (const c of visible) (cats[c.category] = cats[c.category] || []).push(c);
     const p = ctx.prefix;
-    const head = banner(ctx.config, commands.length, false);
+    const head = banner(ctx.config, visible.length, false);
     let list = '';
     for (const [cat, items] of Object.entries(cats)) {
       list += `\n┏━━ *${cat.toUpperCase()}* ━━\n` + items.map((c) => `┃ › ${p}${c.name}`).join('\n') + '\n┗━━━━━━━━━━\n';
