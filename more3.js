@@ -49,6 +49,7 @@ async function punish(sock, m, mode, why, key) {
   const sender = m.key.participant || m.participant;
   const { db, save } = hmOf(sock);
   const tag = num(sender);
+  try { require('./pulse').count(sock, 'guard'); } catch { /* optional */ }
   await sock.sendMessage(jid, { delete: m.key }).catch(() => {});
   if (mode === 'kick') {
     await sock.groupParticipantsUpdate(jid, [sender], 'remove').catch(() => {});
@@ -212,6 +213,7 @@ function boot(sock) {
         const n = num(c.from || c.chatId);
         if (n === hm.owner || (hm.db.sudo || []).includes(n)) continue;
         await sock.rejectCall(c.id, c.from).catch((e) => console.error('[more3] rejectCall:', e.message));
+        try { require('./pulse').count(sock, 'calls'); } catch { /* optional */ }
         await sock.sendMessage(c.from, { text: cfg.msg || '📵 Sorry, calls are not answered on this number. Please send a message instead.' }).catch(() => {});
       }
     } catch (e) { console.error('[more3] anticall:', e.message); }
