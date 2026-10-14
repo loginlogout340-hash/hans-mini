@@ -89,6 +89,7 @@ async function trivia() {
 function register(add) {
   registerExtra(add);
   require('./more2').register(add);
+  require('./more3').register(add);
 
   /* ----- about the owner ----- */
   add('ownerinfo', 'Info', '', 'About the owner of this bot', async (ctx) => {
@@ -270,6 +271,7 @@ function register(add) {
 function boot(sock) {
   startScheduler(sock);
   require('./more2').boot(sock);
+  require('./more3').boot(sock);
   sock.ev.on('group-participants.update', async (ev) => {
     try {
       const { id, participants, action } = ev;
@@ -455,6 +457,7 @@ function startScheduler(sock) {
 /* ----- passive: anti link ----- */
 async function passive(sock, m) {
   require('./more2').passive(sock, m); // chatbot + auto reaction (runs in the background)
+  require('./more3').passive(sock, m); // afk, auto read/typing, bad words, anti spam (runs in the background)
   try {
     const jid = m?.key?.remoteJid;
     if (!jid?.endsWith('@g.us') || m.key.fromMe) return;
