@@ -234,12 +234,24 @@ function register(add) {
     await ctx.sock.sendMessage(ctx.jid, { document: buf, mimetype: 'video/mp4', fileName: 'Video.mp4' }, { quoted: ctx.msg });
   }, { aliases: ['sendmp4', 'dlmp4', 'dvideo'] });
 
-  add('react', 'Fun', '<emoji>', 'Reply to a message with this command to react to it', async (ctx) => {
-    const emoji = (ctx.text.match(/\p{Extended_Pictographic}(\uFE0F|\u200D\p{Extended_Pictographic})*/u) || [])[0];
-    if (!emoji) throw new Error(`Usage: reply to a message with ${ctx.prefix}react 😂`);
+  // FIXED react: reply to a message with  .react 😂   (use  .react off  to remove your reaction).
+  // The key is built the way WhatsApp expects: "participant" is only added in groups, and only
+  // for messages sent by other people.
+  add('react', 'Fun', '<emoji>', 'Reply to a message with this command to react to it (use "off" to remove)', async (ctx) => {
+    const wantsOff = (ctx.args[0] || '').toLowerCase() === 'off';
+    let emoji = '';
+    if (!wantsOff) {
+      emoji = (ctx.text.match(/\p{Extended_Pictographic}(\uFE0F|\u200D\p{Extended_Pictographic})*/u) || [])[0];
+      if (!emoji) throw new Error(`Usage: reply to a message with ${ctx.prefix}react 😂`);
+    }
     const key = ctx.quoted
-      ? { remoteJid: ctx.jid, id: ctx.quoted.id, participant: ctx.quoted.participant, fromMe: !!ctx.quoted.fromBot }
-      : ctx.msg.key;
+      ? {
+          remoteJid: ctx.jid,
+          id: ctx.quoted.id,
+          fromMe: !!ctx.quoted.fromBot,
+          ...(ctx.isGroup && !ctx.quoted.fromBot && ctx.quoted.participant ? { participant: ctx.quoted.participant } : {}),
+        }
+      : ctx.msg.key; // no reply: react to the command message itself
     await ctx.sock.sendMessage(ctx.jid, { react: { text: emoji, key } });
   });
 
