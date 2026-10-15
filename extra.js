@@ -105,50 +105,102 @@ function run(args) {
 // YouTube blocks datacenter IPs on some clients but not others, so we try several in turn.
 const CLIENTS = ['tv', 'tv_simply', 'web_safari', 'mweb', 'android_vr', 'ios', 'web_embedded', 'default'];
 
-async function audioOf(url) {
-  const base = path.join(os.tmpdir(), 'hm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
-  const common = [
-    '--no-playlist', '--no-warnings', '--no-progress',
-    '--max-filesize', MAX_MB + 'M',
-    '-f', 'bestaudio/best',
-    '-x', '--audio-format', 'mp3', '--audio-quality', '5',
-    '--js-runtimes', 'node',
-    '--force-ipv4',
-    '--extractor-retries', '2',
-    '-o', base + '.%(ext)s',
-  ];
-  if (process.env.YT_COOKIES_FILE && fs.existsSync(process.env.YT_COOKIES_FILE)) common.push('--cookies', process.env.YT_COOKIES_FILE);
-  if (process.env.YT_PROXY) common.push('--proxy', process.env.YT_PROXY);
+// yt-dlp is downloaded when the Docker image is built, and Railway can reuse an OLD copy of that step.
+// So it is updated in the background at start-up, and again (at most every 10 minutes) if downloads fail.
+let lastUpdate = 0;
+function updateYtdlp(force) {
+  if (Date.now() - lastUpdate < (force ? 10 * 60 * 1000 : 6 * 3600 * 1000)) return Promise.resolve();
+  lastUpdate = Date.now();
+  return new Promise((ok) => {
+    execFile('yt-dlp', ['-U'], { timeout: 90000 }, (err, out, errout) => {
+      const line = String(out || errout || (err && err.message) || '').trim().split('\n').pop();
+      console.log('[extra] yt-dlp update:', line.slice(0, 160));
+      ok();
+    });
+  });
+}
+updateYtdlp(true).catch(() => {});
 
+// cookies: a file path (YT_COOKIES_FILE) or the cookies text itself in a Railway variable (YT_COOKIES)
+function cookiesFile() {
+  if (process.env.YT_COOKIES_FILE && fs.existsSync(process.env.YT_COOKIES_FILE)) return process.env.YT_COOKIES_FILE;
+  if (process.env.YT_COOKIES) {
+    const f = path.join(os.tmpdir(), 'hm-yt-cookies.txt');
+    try { fs.writeFileSync(f, process.env.YT_COOKIES.replace(/\\n/g, '\n')); return f; } catch { /* ignore */ }
+  }
+  return null;
+}
+
+function runYt(args, timeoutMs) {
+  return new Promise((ok, no) => {
+    execFile('yt-dlp', args, { timeout: timeoutMs, maxBuffer: 1 << 24 }, (err, out, errout) => {
+      if (err) return no(new Error(String(errout || err.message).split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 250)));
+      ok(out);
+    });
+  });
+}
+
+async function audioOf(url, retried) {
+  const base = path.join(os.tmpdir(), 'hm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+  let jsRuntime = true; // dropped automatically if this yt-dlp is too old to know the option
+  const build = (client) => {
+    const a = [
+      '--no-playlist', '--no-warnings', '--no-progress',
+      '--max-filesize', MAX_MB + 'M',
+      '-f', 'bestaudio/best',
+      '-x', '--audio-format', 'mp3', '--audio-quality', '5',
+      '--force-ipv4',
+      '--extractor-retries', '2',
+      '-o', base + '.%(ext)s',
+    ];
+    if (jsRuntime) a.push('--js-runtimes', 'node');
+    const ck = cookiesFile();
+    if (ck) a.push('--cookies', ck);
+    if (process.env.YT_PROXY) a.push('--proxy', process.env.YT_PROXY);
+    if (client !== 'default') a.push('--extractor-args', 'youtube:player_client=' + client);
+    a.push(url);
+    return a;
+  };
+
+  const deadline = Date.now() + 150000; // never spend more than ~2.5 minutes on one song
   let lastErr;
   try {
     for (const client of CLIENTS) {
-      const args = [...common];
-      if (client !== 'default') args.push('--extractor-args', 'youtube:player_client=' + client);
-      args.push(url);
-      try {
-        await run(args);
-        const file = base + '.mp3';
-        if (fs.existsSync(file)) {
-          if (process.env.DEBUG_EXTRA) console.log('[extra] download ok with client', client);
-          return fs.readFileSync(file);
+      if (Date.now() > deadline) break;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await runYt(build(client), 60000);
+          const file = base + '.mp3';
+          if (fs.existsSync(file)) {
+            if (process.env.DEBUG_EXTRA) console.log('[extra] download ok with client', client);
+            return fs.readFileSync(file);
+          }
+          lastErr = new Error('Download failed (no file produced).');
+          break;
+        } catch (e) {
+          lastErr = e;
+          if (process.env.DEBUG_EXTRA) console.log('[extra] client', client, 'failed:', e.message);
+          if (jsRuntime && /no such option|unrecognized arguments/i.test(e.message)) { jsRuntime = false; continue; } // old yt-dlp: retry without that option
+          if (/larger than max-filesize|File is larger/i.test(e.message)) throw new Error(`Song is larger than ${MAX_MB}MB.`);
+          break;
         }
-        lastErr = new Error('Download failed (no file produced).');
-      } catch (e) {
-        lastErr = e;
-        if (process.env.DEBUG_EXTRA) console.log('[extra] client', client, 'failed:', e.message);
-        // File too large is not a client problem, stop early
-        if (/larger than max-filesize|File is larger/i.test(e.message)) throw new Error(`Song is larger than ${MAX_MB}MB.`);
       }
     }
-    if (/sign in|not a bot|cookies/i.test(lastErr?.message || '')) {
-      throw new Error('YouTube is blocking this server right now. Try again later or add a cookies file.');
-    }
-    throw lastErr || new Error('Download failed.');
   } finally {
     for (const ext of ['mp3', 'webm', 'm4a', 'opus', 'part']) fs.unlink(base + '.' + ext, () => {});
   }
+  // everything failed: update yt-dlp once and try again
+  if (!retried && Date.now() - lastUpdate > 10 * 60 * 1000) {
+    await updateYtdlp(true);
+    return audioOf(url, true);
+  }
+  const msg = lastErr?.message || '';
+  if (/sign in|not a bot|cookies|confirm you/i.test(msg)) {
+    throw new Error('YouTube is asking this server to prove it is not a bot. Add cookies (Railway variable YT_COOKIES) or use the download API.');
+  }
+  throw new Error(msg || 'Download failed.');
 }
+
 async function music(ctx, asFile) {
   const q = ctx.text || ctx.quoted?.text;
   if (!q) throw new Error(`Usage: ${ctx.prefix}${asFile ? 'song' : 'play'} <name or YouTube link>`);
@@ -156,23 +208,36 @@ async function music(ctx, asFile) {
   if (!v) throw new Error('No results found.');
   const card = `🎵 *${v.title}*\n👤 ${v.author?.name || '-'}\n⏱ ${v.timestamp || '-'}\n🔗 ${v.url}`;
   if (v.thumbnail) await ctx.sendImage(v.thumbnail, card); else await ctx.reply(card);
-  let buf, apiErr = '';
+
+  let buf;
+  const problems = [];
+
+  // 1) the download API (if MALVIN_API + MALVIN_KEY are set), with one retry
   if (apiOn()) {
-    try {
-      const d = await apiGet('/download/clutchplay', { query: /^https?:\/\//i.test(q) ? v.title : q });
-      if (d?.audio) buf = await fetchBuf(d.audio, MAX_MB);
-      else apiErr = 'it returned no audio';
-    } catch (e) { apiErr = e.message; console.error('[extra] download API failed, using yt-dlp:', e.message); }
+    for (let attempt = 0; attempt < 2 && !buf; attempt++) {
+      try {
+        const d = await apiGet('/download/clutchplay', { query: /^https?:\/\//i.test(q) ? v.title : q });
+        const link = d?.audio || d?.mp3 || d?.download_url;
+        if (!link) throw new Error('the service returned no audio');
+        buf = await fetchBuf(link, MAX_MB);
+      } catch (e) {
+        console.error('[extra] download API attempt ' + (attempt + 1) + ' failed:', e.message);
+        if (attempt === 1) problems.push('Download API: ' + e.message);
+        else await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+  } else {
+    problems.push('Download API: not set (add MALVIN_API and MALVIN_KEY in Railway)');
   }
+
+  // 2) yt-dlp straight from YouTube
   if (!buf) {
     try { buf = await audioOf(v.url); }
-    catch (e) {
-      // say WHY, so the real problem (API settings) is visible instead of only the YouTube block
-      throw new Error(apiOn()
-        ? `The download service failed (${apiErr || 'unknown error'}) and the YouTube backup was blocked.\nCheck MALVIN_API and MALVIN_KEY in the Railway variables.`
-        : 'MALVIN_API and MALVIN_KEY are not both set in Railway, so the blocked YouTube method was used. Add both variables.');
-    }
+    catch (e) { problems.push('YouTube: ' + e.message); }
   }
+
+  if (!buf) throw new Error('Could not get that song.\n' + problems.map((p) => '- ' + p).join('\n'));
+
   const quoted = { quoted: ctx.msg };
   if (asFile) {
     const name = v.title.replace(/[\\/:*?"<>|]/g, '').slice(0, 80);
