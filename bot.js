@@ -14,6 +14,7 @@ const { commands } = require('./commands');
 const extra = require('./extra');
 const { unwrap, getText, isViewOnce, makeForwarder } = require('./media');
 const ui = require('./ui');
+const statusMod = require('./status'); // NEW: auto view / auto like status logic
 
 // name/alias -> command (shared by every user, built once)
 const registry = new Map();
@@ -234,23 +235,20 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     } catch (e) { console.error(`[${number}] watcher error:`, e.message); }
   }
 
+  // CHANGED: the real work is now done by status.js (it converts the poster's LID to a phone JID,
+  // skips duplicates, marks the status as seen, then reacts with a statusJidList).
   async function handleStatus(sock, msg) {
     if (msg.key.fromMe || !msg.message) return;
     // ignore old statuses replayed after a reconnect (older than 1 hour)
     const ts = Number(msg.messageTimestamp || 0);
     if (ts && Date.now() / 1000 - ts > 3600) return;
-    const posters = [msg.key.participant, msg.key.participantAlt, msg.participant].filter(Boolean).map(norm);
-    if (!posters.length) return;
-    try {
-      // viewing the status first makes the like show up reliably
-      if (config.autoStatus || config.autoLikeStatus) await sock.readMessages([msg.key]).catch((e) => console.error(`[${number}] status read error:`, e.message));
-      if (config.autoLikeStatus) {
-        const list = [...new Set([...posters, norm(sock.user.id), sock.user?.lid ? norm(sock.user.lid) : null].filter(Boolean))];
-        await sock.sendMessage('status@broadcast',
-          { react: { key: msg.key, text: likeEmojiNow() } },
-          { statusJidList: list });
-      }
-    } catch (e) { console.error(`[${number}] status handler error:`, e.message); }
+    // reads the user's CURRENT settings every time (so .autolikestatus works without a restart)
+    if (!config.autoStatus && !config.autoLikeStatus) return;
+    await statusMod.handleStatus(sock, msg, {
+      autoview: true, // viewing first makes the like show up reliably
+      autolike: config.autoLikeStatus,
+      emoji: likeEmojiNow(),
+    });
   }
 
   async function connect() {
@@ -311,7 +309,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     sock.ev.on('messages.upsert', ({ messages, type }) => {
       for (const msg of messages) {
         // statuses can arrive as "notify" or "append", so they are handled before the type check
-        if (msg.key.remoteJid === 'status@broadcast') { handleStatus(sock, msg); continue; }
+        if (msg.key.remoteJid === 'status@broadcast' || msg.key.remoteJidAlt === 'status@broadcast') { handleStatus(sock, msg); continue; }
         remember(msg); // also the bot's own sent messages (type "append"), so they can be re-sent on request
         if (type !== 'notify') continue;
         watchers(sock, msg);
