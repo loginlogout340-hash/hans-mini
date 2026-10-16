@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "latest",
+    "jimp": "^1.6.0",
     "pino": "^9.0.0",
+    "sharp": "^0.33.5",
     "yt-search": "latest"
   },
   "license": "MIT"
