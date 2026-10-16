@@ -15,6 +15,8 @@
  *   YT_PROXY        = http://user:pass@host:port  (residential proxy, if you ever get one)
  *   MALVIN_API      = base link of the download API (no trailing slash)
  *   MALVIN_KEY      = its API key   -> when both are set, play/song/video use the API first
+ *   MALVIN_KEY_2, MALVIN_KEY_3 ... = more keys (or put several in MALVIN_KEY separated by commas):
+ *                     when one key reaches its daily limit the next one is used automatically
  */
 const fs = require('fs');
 const os = require('os');
@@ -26,11 +28,36 @@ const MAX_MB = 40;
 
 /* ---------- download API (optional: MALVIN_API + MALVIN_KEY) ---------- */
 const apiBase = () => (process.env.MALVIN_API || '').trim().replace(/\/+$/, '');
-const apiOn = () => !!(apiBase() && process.env.MALVIN_KEY);
+// every key you added: MALVIN_KEY, MALVIN_KEY_2 ... MALVIN_KEY_9, MALVIN_KEYS (several keys can be comma separated)
+const apiKeyList = () => {
+  const raw = [process.env.MALVIN_KEY, process.env.MALVIN_KEYS];
+  for (let i = 2; i <= 9; i++) raw.push(process.env['MALVIN_KEY_' + i]);
+  return [...new Set(raw.flatMap((k) => String(k || '').split(',')).map((k) => k.trim()).filter(Boolean))];
+};
+const apiOn = () => !!(apiBase() && apiKeyList().length);
+// a key that said "daily limit reached" is skipped for the rest of that UTC day (it is tried again if every key is used up)
+const spentKeys = new Map();
+const utcDay = () => new Date().toISOString().slice(0, 10);
+async function withKey(call) {
+  const keys = apiKeyList();
+  const fresh = keys.filter((k) => spentKeys.get(k) !== utcDay());
+  let lastErr;
+  for (const k of fresh.length ? fresh : keys) {
+    try { return await call(k); } catch (e) {
+      lastErr = e;
+      if (/limit|quota|too many requests/i.test(String(e.message))) { spentKeys.set(k, utcDay()); continue; }
+      throw e;
+    }
+  }
+  throw lastErr || new Error('No download key is set.');
+}
 async function apiGet(route, params, timeoutMs = 30000) {
+  return withKey((key) => apiGetKey(key, route, params, timeoutMs));
+}
+async function apiGetKey(key, route, params, timeoutMs) {
   const once = async (p) => {
     const url = new URL(apiBase() + p);
-    url.searchParams.set('apikey', process.env.MALVIN_KEY);
+    url.searchParams.set('apikey', key);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
     let j = null;
@@ -525,4 +552,4 @@ async function passive(sock, m) {
   } catch (e) { console.error('[extra]', e.message); }
 }
 
-module.exports = { register, boot, passive, stickerCommand, apiOn, apiBase, apiGet, apiMedia, findVideo, fetchBuf, toMp3, MAX_MB };
+module.exports = { register, boot, passive, stickerCommand, apiOn, apiBase, apiGet, withKey, apiMedia, findVideo, fetchBuf, toMp3, MAX_MB };
