@@ -15,6 +15,7 @@ const extra = require('./extra');
 const { unwrap, getText, isViewOnce, makeForwarder } = require('./media');
 const ui = require('./ui');
 const statusMod = require('./status'); // NEW: auto view / auto like status logic
+const hanson = require('./hanson'); // Hanson, the built-in AI assistant (turned on with .hanson on)
 
 // name/alias -> command (shared by every user, built once)
 const registry = new Map();
@@ -121,6 +122,12 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   async function handle(sock, msg) {
     const jid = msg.key.remoteJid;
     if (!jid || jid === 'status@broadcast' || !msg.message) return;
+
+    // "Hanson, ...": the assistant turns the request into a command (typed as the same person) or just answers
+    if (hanson.wants(sock, msg, config)) {
+      msg = await hanson.route(sock, msg, { config, registry });
+      if (!msg) return;
+    }
 
     const message = unwrap(msg.message);
     const body = getText(message).trim();
