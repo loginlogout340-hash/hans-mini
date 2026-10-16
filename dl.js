@@ -6,6 +6,11 @@
  *   MALVIN_KEY = its API key
  * Only .gitclone works without them.
  *
+ * NEW: every "link -> video" downloader first tries its own dedicated API path; if that path does not exist
+ * or fails, it falls back to the general downloader (/api/download/savenow, aio2, 9xbuddy), which works for
+ * YouTube, Instagram, TikTok, Facebook, Twitter and many more. .spotify with a song name falls back to
+ * searching YouTube.
+ *
  * Options after the link:  .tiktok <link> audio    .yt <link> 720    .yt <link> mp3    .spotify <name> doc
  */
 const extra = require('./extra');
@@ -65,6 +70,44 @@ async function sendItems(ctx, items, caption, wantAudio, audioUrl) {
       await ctx.sock.sendMessage(ctx.jid, { audio: buf, mimetype: 'audio/mpeg', ptt: false }, quoted);
     } else await ctx.sock.sendMessage(ctx.jid, { document: { url: it.url }, fileName: it.fileName || 'file', mimetype: it.mimetype || 'application/octet-stream', caption: cap }, quoted);
   }
+}
+
+/* ---------- general fallback (works for most sites) ---------- */
+// downloaders whose job is simply "link in, video out"; these may use the general fallback
+const GENERIC = new Set([
+  'fb', 'tiktok', 'ig', 'yt', 'tiktokv2', 'tiktok2', 'tiktok5', 'tiktok7', 'twitter2', 'douyin',
+  'snack', 'snackvideo2', 'vidsplay', 'alamy', 'lahelu', 'capcut', 'threads', 'pinterest',
+]);
+// tells a picture from a video by its first bytes
+const sniff = (buf) => {
+  if (buf[0] === 0xff && buf[1] === 0xd8) return 'image';
+  if (buf[0] === 0x89 && buf[1] === 0x50) return 'image';
+  if (buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP') return 'image';
+  return 'video';
+};
+async function sendGeneric(ctx, link, opts) {
+  const wantAudio = opts.some(isAudioOpt);
+  const qo = opts.find((o) => /^(144|240|360|480|720|1080|1440|4k)p?$/i.test(o));
+  const fmt = wantAudio ? 'mp3' : (qo ? qo.replace(/p$/i, '') : '720');
+  const m = await extra.apiMedia(link, fmt);
+  const quoted = { quoted: ctx.msg };
+  if (wantAudio) {
+    const buf = await extra.toMp3(await extra.fetchBuf(m.link, 60));
+    return ctx.sock.sendMessage(ctx.jid, { audio: buf, mimetype: 'audio/mpeg', ptt: false }, quoted);
+  }
+  const buf = await extra.fetchBuf(m.link, 100);
+  const caption = m.title ? '🎬 ' + String(m.title).slice(0, 120) : undefined;
+  if (sniff(buf) === 'image') return ctx.sock.sendMessage(ctx.jid, { image: buf, caption }, quoted);
+  if (buf.length > 50 * 1048576) return ctx.sock.sendMessage(ctx.jid, { document: buf, mimetype: 'video/mp4', fileName: safeName(m.title, 'video') + '.mp4', caption }, quoted);
+  return ctx.sock.sendMessage(ctx.jid, { video: buf, mimetype: 'video/mp4', caption }, quoted);
+}
+
+// Spotify song NAME -> find it on YouTube and download that as mp3
+async function spotifyViaYoutube(q) {
+  const v = await extra.findVideo(q);
+  if (!v) throw new Error('No tracks found.');
+  const m = await extra.apiMedia(v.url, 'mp3');
+  return { buf: await extra.toMp3(await extra.fetchBuf(m.link, extra.MAX_MB)), title: v.title };
 }
 
 /* ---------- the simple "give a link, get the media" downloaders ---------- */
@@ -290,9 +333,24 @@ function register(add) {
       const link = parts[0];
       const opts = parts.slice(1);
       if (s.check && !s.check.test(link)) throw new Error(`Please send a valid ${s.label} link.\nUsage: ${ctx.prefix}${s.name} ${s.usage}`);
-      const d = await extra.apiGet(s.ep, { url: link }, s.timeout || 30000);
-      const out = s.resolve(d, opts);
-      await sendItems(ctx, out.items, out.caption, opts.some(isAudioOpt), out.audioUrl);
+
+      // 1) this downloader's own dedicated API path
+      let out, primaryErr;
+      try {
+        const d = await extra.apiGet(s.ep, { url: link }, s.timeout || 30000);
+        out = s.resolve(d, opts);
+      } catch (e) {
+        if (!GENERIC.has(s.name)) throw e; // gdrive, mediafire, mega, profile lookups: no general fallback
+        primaryErr = e;
+      }
+      if (out) return void (await sendItems(ctx, out.items, out.caption, opts.some(isAudioOpt), out.audioUrl));
+
+      // 2) the general downloader (savenow, then aio2, then 9xbuddy)
+      try {
+        await sendGeneric(ctx, link, opts);
+      } catch (e2) {
+        throw new Error('Could not download that link.\n- Dedicated service: ' + primaryErr.message + '\n- General service: ' + e2.message);
+      }
     }, { aliases: s.aliases });
   }
 
@@ -330,19 +388,28 @@ function register(add) {
     const asDoc = /\sdoc$/i.test(q);
     if (asDoc) q = q.replace(/\s+doc$/i, '').trim();
     if (!q) throw new Error(`Usage: ${ctx.prefix}spotify The Spectre Alan Walker\n${ctx.prefix}spotify https://open.spotify.com/track/...`);
-    let trackUrl = q;
-    if (!/spotify\.com/i.test(q)) {
-      const j = await apiRaw('/search/spotifysearch', { query: q });
-      const list = [j?.results, j?.data?.results, j?.data].find((x) => Array.isArray(x)) || [];
-      const t = list[0];
-      trackUrl = t && (t.url || t.link || t.spotify_url);
-      if (!trackUrl) throw new Error('No tracks found. Try a direct Spotify link.');
+
+    let buf, title;
+    try {
+      let trackUrl = q;
+      if (!/spotify\.com/i.test(q)) {
+        const j = await apiRaw('/search/spotifysearch', { query: q });
+        const list = [j?.results, j?.data?.results, j?.data].find((x) => Array.isArray(x)) || [];
+        const t = list[0];
+        trackUrl = t && (t.url || t.link || t.spotify_url);
+        if (!trackUrl) throw new Error('No tracks found. Try a direct Spotify link.');
+      }
+      const d = await extra.apiGet('/download/spotidown', { url: trackUrl });
+      if (!d?.download_url) throw new Error(d?.type && d.type !== 'track' ? 'That is a playlist or album link. Send a single track.' : 'Could not get that track.');
+      buf = await extra.toMp3(await extra.fetchBuf(d.download_url, extra.MAX_MB));
+      title = d.title;
+    } catch (e) {
+      if (/spotify\.com/i.test(q)) throw e; // a Spotify link cannot be searched on YouTube
+      try { ({ buf, title } = await spotifyViaYoutube(q)); }
+      catch (e2) { throw new Error('Could not get that song.\n- Spotify service: ' + e.message + '\n- YouTube route: ' + e2.message); }
     }
-    const d = await extra.apiGet('/download/spotidown', { url: trackUrl });
-    if (!d?.download_url) throw new Error(d?.type && d.type !== 'track' ? 'That is a playlist or album link. Send a single track.' : 'Could not get that track.');
-    const buf = await extra.toMp3(await extra.fetchBuf(d.download_url, extra.MAX_MB));
     const quoted = { quoted: ctx.msg };
-    if (asDoc) await ctx.sock.sendMessage(ctx.jid, { document: buf, mimetype: 'audio/mpeg', fileName: safeName(d.title, 'spotify_track') + '.mp3', caption: '🎧 ' + (d.title || 'Spotify Track') }, quoted);
+    if (asDoc) await ctx.sock.sendMessage(ctx.jid, { document: buf, mimetype: 'audio/mpeg', fileName: safeName(title, 'spotify_track') + '.mp3', caption: '🎧 ' + (title || 'Spotify Track') }, quoted);
     else await ctx.sock.sendMessage(ctx.jid, { audio: buf, mimetype: 'audio/mpeg', ptt: false }, quoted);
   }, { aliases: ['spotifydl', 'spotidl', 'spoti'] });
 
