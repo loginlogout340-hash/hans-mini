@@ -93,6 +93,8 @@ function register(add) {
   require('./more5').register(add);
   require('./more6').register(add);
   require('./hanson').register(add);
+  require('./community').register(add);
+  require('./pulse').register(add);
 
   /* ----- about the owner ----- */
   add('ownerinfo', 'Info', '', 'About the owner of this bot', async (ctx) => {
@@ -276,6 +278,8 @@ function boot(sock) {
   require('./more2').boot(sock);
   require('./more3').boot(sock);
   require('./more6').boot(sock);
+  require('./community').boot(sock);
+  require('./pulse').boot(sock);
   sock.ev.on('group-participants.update', async (ev) => {
     try {
       const { id, participants, action } = ev;
@@ -463,6 +467,7 @@ async function passive(sock, m) {
   require('./more2').passive(sock, m); // chatbot + auto reaction (runs in the background)
   require('./more3').passive(sock, m); // afk, auto read/typing, bad words, anti spam (runs in the background)
   require('./more6').passive(sock, m); // always-online delivery ticks (runs in the background)
+  require('./pulse').passive(sock, m); // Hans Pulse counters (runs in the background)
   try {
     const jid = m?.key?.remoteJid;
     if (!jid?.endsWith('@g.us') || m.key.fromMe) return;
