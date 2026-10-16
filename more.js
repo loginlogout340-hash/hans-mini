@@ -171,9 +171,9 @@ function register(add) {
   blockCmd('unblock', 'unblock', 'Unblocked');
 
   /* ----- profile pictures ----- */
-  const picError = (e) => (/jimp|sharp|Cannot find module/i.test(e.message)
-    ? new Error('The picture tool is missing on the server. Add "jimp" to the dependencies in package.json and redeploy.')
-    : e);
+  const picError = (e) => (/jimp|sharp|image processing|Cannot find module/i.test(e.message)
+    ? new Error('The picture tool is missing on the server. Add "sharp" and "jimp" to the dependencies in package.json and redeploy.')
+    : new Error('Could not set the picture: ' + (e.message || e)));
   add('pp', 'Owner', '(reply to a photo)', "Set the bot's WhatsApp profile picture", async (ctx) => {
     const img = await ctx.downloadMedia();
     try { await ctx.sock.updateProfilePicture(norm(ctx.sock.user.id), img); } catch (e) { throw picError(e); }
