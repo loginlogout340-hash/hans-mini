@@ -2,6 +2,8 @@
 /**
  * Hans-Mini more5.js
  *   .shazam            reply to a song / voice note / video -> tells you the song name and artist
+ *   .profilepic        get someone's profile picture (reply to them, @mention, or give a number)
+ *   .blackvideo        reply to audio / voice note / song -> sends it back as a video with a black screen
  *   .lyrics <song>     look up the lyrics of a song (or reply to a message with the song name)
  *   .stealth on|off    ghost mode: hides your last seen, online status and read receipts
  *                      (with read receipts off, people also cannot see that you viewed their status)
@@ -50,6 +52,27 @@ async function identify(buf) {
     throw new Error(msg.slice(0, 150));
   }
   return j.result || null;
+}
+
+/* ---------------- .blackvideo ---------------- */
+const MAX_AUDIO_SECONDS = 900; // 15 minutes
+// audio in, mp4 out: a plain black picture with the audio on top (the video is exactly as long as the audio)
+function blackVideo(buf) {
+  const base = path.join(os.tmpdir(), 'hm-bv-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+  return new Promise((ok, no) => {
+    try { fs.writeFileSync(base + '.in', buf); } catch (e) { return no(e); }
+    const args = ['-y', '-f', 'lavfi', '-i', 'color=c=black:s=640x360:r=10', '-i', base + '.in',
+      '-map', '0:v', '-map', '1:a:0', '-t', String(MAX_AUDIO_SECONDS), '-shortest',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', base + '.mp4'];
+    execFile('ffmpeg', args, { timeout: 180000 }, (err, out, errout) => {
+      let res = null;
+      if (!err) { try { res = fs.readFileSync(base + '.mp4'); } catch { /* handled below */ } }
+      for (const e of ['in', 'mp4']) fs.unlink(base + '.' + e, () => {});
+      if (res) return ok(res);
+      no(new Error(/no such file|not found|ENOENT/i.test(String(err && err.message)) ? 'ffmpeg is missing on the server.' : 'Could not convert that file. Make sure you replied to an audio or voice note.'));
+    });
+  });
 }
 
 /* ---------------- .lyrics ---------------- */
@@ -127,6 +150,42 @@ function register(add) {
       `\nGet it with ${ctx.prefix}song ${res.title || ''} ${res.artist || ''}`.trimEnd(),
     ].filter(Boolean).join('\n');
   }, { aliases: ['whatsong', 'findsong', 'identify'] });
+
+  add('profilepic', 'Media', '@user | reply | number', "Get someone's WhatsApp profile picture", async (ctx) => {
+    const digits = (j) => String(j || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+    let jid = null;
+    if (ctx.mentioned && ctx.mentioned.length) jid = ctx.mentioned[0];
+    else if (ctx.quoted && ctx.quoted.participant) jid = ctx.quoted.participant;
+    else {
+      const n = ctx.args.map((a) => a.replace(/\D/g, '')).find((d) => d.length >= 7);
+      if (n) jid = (/^0\d{9}$/.test(n) ? '233' + n.slice(1) : n) + '@s.whatsapp.net'; // 024... is read as a Ghana number
+    }
+    let label;
+    if (jid) label = '@' + digits(jid);
+    else if (ctx.isGroup) { jid = ctx.jid; label = 'this group'; }                 // no target in a group: the group's picture
+    else { jid = ctx.jid; label = '@' + digits(ctx.jid); }                          // in a private chat: the other person
+    let url;
+    try { url = await ctx.sock.profilePictureUrl(jid, 'image'); }
+    catch (e) { url = null; }
+    if (!url) throw new Error(`No profile picture found for ${label}. They may have none, or they hide it from people who are not their contacts.`);
+    const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    if (!r.ok) throw new Error('Could not download the picture (HTTP ' + r.status + '). Try again.');
+    const image = Buffer.from(await r.arrayBuffer());
+    const mentions = jid.endsWith('@g.us') ? [] : [jid];
+    await ctx.sock.sendMessage(ctx.jid, { image, caption: `🖼️ Profile picture of ${label}`, mentions }, { quoted: ctx.msg });
+  }, { aliases: ['getdp', 'dp', 'pfp', 'avatar'] });
+
+  add('blackvideo', 'Media', '(reply to an audio or voice note)', 'Turn an audio into a video with a black screen', async (ctx) => {
+    let buf;
+    try { buf = await ctx.downloadMedia(); }
+    catch (e) { throw new Error(`Reply to an audio, song or voice note with ${ctx.prefix}blackvideo.`); }
+    if (!buf || !buf.length) throw new Error('Could not read that file.');
+    if (buf.length > 40 * 1048576) throw new Error('That file is too big (over 40MB).');
+    await ctx.reply('🎬 Making the video...');
+    const video = await blackVideo(buf);
+    if (video.length > 60 * 1048576) throw new Error('The video came out too large for WhatsApp. Try a shorter audio.');
+    await ctx.sock.sendMessage(ctx.jid, { video, mimetype: 'video/mp4', caption: '🎬 Black video' }, { quoted: ctx.msg });
+  }, { aliases: ['audio2video', 'a2v', 'tovideo', 'blackscreen'] });
 
   add('lyrics', 'Media', '<song name and artist>', 'Look up the lyrics of a song', async (ctx) => {
     const q = (ctx.text || ctx.quoted?.text || '').trim();
