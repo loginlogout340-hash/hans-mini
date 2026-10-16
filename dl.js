@@ -75,8 +75,7 @@ async function sendItems(ctx, items, caption, wantAudio, audioUrl) {
 /* ---------- general fallback (works for most sites) ---------- */
 // downloaders whose job is simply "link in, video out"; these may use the general fallback
 const GENERIC = new Set([
-  'fb', 'tiktok', 'ig', 'yt', 'tiktokv2', 'tiktok2', 'tiktok5', 'tiktok7', 'twitter2', 'douyin',
-  'snack', 'snackvideo2', 'vidsplay', 'alamy', 'lahelu', 'capcut', 'threads', 'pinterest',
+  'fb', 'tiktok', 'ig', 'yt', 'twitter2', 'threads', 'pinterest',
 ]);
 // tells a picture from a video by its first bytes
 const sniff = (buf) => {
@@ -193,61 +192,6 @@ const SPECS = [
     },
   },
   {
-    name: 'alamy', aliases: ['alamydl', 'alamyvideo'], usage: '<alamy video link>', desc: 'Download videos from Alamy',
-    check: /alamy\.com/i, label: 'Alamy', ep: '/download/alamy',
-    resolve: (d) => { if (!d?.video_url) throw new Error('Failed to fetch the video from Alamy.'); return vid(d.video_url, '📷 *Alamy Video*'); },
-  },
-  {
-    name: 'snack', aliases: ['snackvideo', 'snackdl', 'sck'], usage: '<snackvideo link>', desc: 'Download from SnackVideo', label: 'SnackVideo', ep: '/download/snack',
-    resolve: (d) => { if (!d?.video_url) throw new Error('Failed to fetch the video from SnackVideo.'); return vid(d.video_url, '🍿 *SnackVideo*'); },
-  },
-  {
-    name: 'vidsplay', aliases: ['vidsplaydl', 'vplay'], usage: '<vidsplay link>', desc: 'Download from Vidsplay', label: 'Vidsplay', ep: '/download/vidsplay',
-    resolve: (d) => { if (!d?.video_url) throw new Error('Failed to fetch the video from Vidsplay.'); return vid(d.video_url, '🎬 *Vidsplay Video*'); },
-  },
-  {
-    name: 'tiktokv2', aliases: ['ttv2', 'tikv2'], usage: '<tiktok link> [audio]', desc: 'TikTok download (second engine)',
-    check: /tiktok/i, label: 'TikTok', ep: '/download/tiktokv2',
-    resolve: (d) => {
-      if (!d?.video_url) throw new Error('Failed to fetch the TikTok video.');
-      const s = d.stats || {};
-      return vid(d.video_url, `📱 *TikTok V2*\n👤 ${d.author?.username || 'Unknown'}\n❤️ ${s.likes || 0} | 💬 ${s.comments || 0} | 🔁 ${s.shares || 0}\n\n${d.title || ''}`);
-    },
-  },
-  {
-    name: 'tiktok2', aliases: ['ttaplmate', 'tiktokaplmate', 'tt2'], usage: '<tiktok link> [audio]', desc: 'TikTok download (Aplmate engine)',
-    check: /tiktok/i, label: 'TikTok', ep: '/download/tiktok2/aplmate',
-    resolve: (d) => {
-      if (!d?.download_url) throw new Error('Failed to fetch the TikTok video.');
-      return vid(d.download_url, `📱 *TikTok (Aplmate)*\n👤 ${d.author || 'Unknown'}\n\n${d.title || ''}`);
-    },
-  },
-  {
-    name: 'tiktok5', aliases: ['tt5', 'tiktokv5'], usage: '<tiktok link> [audio]', desc: 'TikTok download (engine v5)',
-    check: /tiktok/i, label: 'TikTok', ep: '/download/tiktok5',
-    resolve: (d) => {
-      const url = d?.no_watermark_link || d?.no_watermark_link_hd || d?.watermark_link;
-      if (!url) throw new Error('No video link found.');
-      return vid(url, `📱 *TikTok v5*\n👤 ${d.author_nickname || 'Unknown'}\n${stat(d)}`);
-    },
-  },
-  {
-    name: 'tiktok7', aliases: ['tt7', 'tiktokv7'], usage: '<tiktok link> [audio]', desc: 'TikTok download (TikCDN engine)',
-    check: /tiktok/i, label: 'TikTok', ep: '/download/tiktok7',
-    resolve: (d) => {
-      const url = d?.no_watermark_link || d?.no_watermark_link_hd;
-      if (!url) throw new Error('No video link found.');
-      return vid(url, `📱 *TikTok v7*\n👤 ${d.author_nickname || 'Unknown'}\n${stat(d)}`);
-    },
-  },
-  {
-    name: 'capcut', aliases: ['capcutdl', 'cct'], usage: '<capcut template link>', desc: 'Download CapCut template videos', label: 'CapCut', ep: '/download/capcut',
-    resolve: (d) => {
-      if (!d?.originalVideoUrl) throw new Error('Failed to fetch the CapCut template.');
-      return vid(d.originalVideoUrl, `🎬 *CapCut Template*\n📝 ${d.title || 'No title'}\n👤 ${d.authorName || 'Unknown'}`);
-    },
-  },
-  {
     name: 'savefrom', aliases: ['sf', 'savefromdl'], usage: '<soundcloud or other audio link>', desc: 'Download audio from SoundCloud and similar sites', label: 'media', ep: '/download/savefrom',
     resolve: (d) => {
       const media = Array.isArray(d) ? d[0] : null;
@@ -266,28 +210,6 @@ const SPECS = [
     },
   },
   {
-    name: 'douyin', aliases: ['douyindl', 'dydl'], usage: '<douyin link>', desc: 'Download Douyin (Chinese TikTok) videos', label: 'Douyin', ep: '/download/douyin',
-    resolve: (d) => {
-      const url = d?.downloads?.[0]?.url || d?.downloads?.[1]?.url;
-      if (!url) throw new Error('No video link found.');
-      return vid(url, `🎬 *Douyin*\n📝 ${d.title || 'Video'}`);
-    },
-  },
-  {
-    name: 'snackvideo2', aliases: ['snack2', 'sv2'], usage: '<snackvideo link>', desc: 'SnackVideo download (second engine)', label: 'SnackVideo', ep: '/download/snackvideo2',
-    resolve: (d) => {
-      if (!d?.videoUrl) throw new Error('Failed to fetch the SnackVideo.');
-      return vid(d.videoUrl, `🍿 *SnackVideo*\n📝 ${d.title || 'Video'}\n👤 ${d.creator?.name || 'Unknown'}`);
-    },
-  },
-  {
-    name: 'lahelu', aliases: ['laheludl', 'lhl'], usage: '<lahelu post link>', desc: 'Download videos from Lahelu', label: 'Lahelu', ep: '/download/lahelu',
-    resolve: (d) => {
-      if (!d?.media) throw new Error('Failed to fetch the Lahelu post.');
-      return vid(d.media, `🎬 *Lahelu*\n📝 ${d.title || 'Video'}\n👤 ${d.userUsername || 'Unknown'}`);
-    },
-  },
-  {
     name: 'threads', aliases: ['threadsdl'], usage: '<threads post link>', desc: 'Download media from a Threads post',
     check: /threads\.(net|com)\/@[^/]+\/post\//i, label: 'Threads post', ep: '/download/threads',
     resolve: (d) => {
@@ -303,22 +225,6 @@ const SPECS = [
       const medias = d?.medias || [];
       if (!medias.length) throw new Error('No media found on this pin.');
       return { items: medias.map((m) => ({ type: m.type === 'video' ? 'video' : 'image', url: m.url })), caption: `📌 *${d.title || 'Pinterest'}*\n📝 ${(d.description || '').slice(0, 150)}` };
-    },
-  },
-  {
-    name: 'fastdl', aliases: ['fdl', 'fastinstagram'], usage: '<instagram username or link>', desc: 'Instagram profile details', label: 'Instagram username or link', ep: '/download/fastdl',
-    resolve: (d) => {
-      const u = d?.data?.[0]?.user;
-      if (!u) throw new Error('Failed to fetch the Instagram data.');
-      return { items: [{ type: 'image', url: u.profile_pic_url }], caption: `📸 *Instagram*\n👤 ${u.username}\n📛 ${u.full_name || 'No name'}\n👥 Followers: ${u.follower_count || 0}\n📷 Posts: ${u.media_count || 0}` };
-    },
-  },
-  {
-    name: 'ummy', aliases: ['ummydl', 'instagramdl'], usage: '<instagram username>', desc: 'Instagram profile details (second engine)', label: 'Instagram username', ep: '/download/ummy',
-    resolve: (d) => {
-      const u = d?.data?.[0]?.user;
-      if (!u) throw new Error('Failed to fetch the Instagram data.');
-      return { items: [{ type: 'image', url: u.profile_pic_url }], caption: `🖼️ *Instagram*\n👤 @${u.username}\n📛 ${u.full_name || 'No name'}\n📝 ${u.biography || 'No bio'}\n✅ Verified: ${u.is_verified ? 'Yes' : 'No'}\n👥 Followers: ${u.follower_count || 0}\n👤 Following: ${u.following_count || 0}\n📷 Posts: ${u.media_count || 0}` };
     },
   },
 ];
