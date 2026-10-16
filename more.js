@@ -465,6 +465,7 @@ function startScheduler(sock) {
 async function passive(sock, m) {
   require('./more2').passive(sock, m); // chatbot + auto reaction (runs in the background)
   require('./more3').passive(sock, m); // afk, auto read/typing, bad words, anti spam (runs in the background)
+  require('./more6').passive(sock, m); // always-online delivery ticks (runs in the background)
   require('./pulse').passive(sock, m); // Hans Pulse counters (runs in the background)
   try {
     const jid = m?.key?.remoteJid;
