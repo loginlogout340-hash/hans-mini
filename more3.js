@@ -31,8 +31,8 @@ const ago = (t) => {
 const onOff = (v) => (v ? '✅ ON' : '❌ OFF');
 
 /* ---------------- group helpers ---------------- */
-const metaCache = new Map();
 async function groupMeta(sock, jid) {
+  const metaCache = (hmOf(sock).m3meta ||= new Map()); // one cache per linked user
   const h = metaCache.get(jid);
   if (h && Date.now() - h.t < 60000) return h.d;
   const d = await sock.groupMetadata(jid);
@@ -226,8 +226,6 @@ function boot(sock) {
 }
 
 /* ---------------- passive ---------------- */
-const afkSeen = new Map();   // chat -> time of the last afk reply
-const spamLog = new Map();   // chat:sender -> timestamps
 const PREFIX_RE = /^[.!#\/$~,]/;
 
 async function passive(sock, m) {
@@ -236,6 +234,8 @@ async function passive(sock, m) {
     if (!jid || !m.message || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return;
     const hm = hmOf(sock);
     const { db } = hm;
+    const afkSeen = (hm.m3afk ||= new Map());   // chat -> time of the last afk reply (per linked user)
+    const spamLog = (hm.m3spam ||= new Map());  // chat:sender -> timestamps (per linked user)
     const c = unwrap(m.message);
     if (c.reactionMessage || c.protocolMessage || c.senderKeyDistributionMessage) return;
     const isGroup = jid.endsWith('@g.us');
