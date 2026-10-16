@@ -28,14 +28,52 @@ const MAX_MB = 40;
 const apiBase = () => (process.env.MALVIN_API || '').trim().replace(/\/+$/, '');
 const apiOn = () => !!(apiBase() && process.env.MALVIN_KEY);
 async function apiGet(route, params, timeoutMs = 30000) {
-  const url = new URL(apiBase() + route);
-  url.searchParams.set('apikey', process.env.MALVIN_KEY);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-  let j = null;
-  try { j = await r.json(); } catch { /* not JSON */ }
-  if (!r.ok || j?.status === false) throw new Error(String(j?.error || j?.message || 'Download service returned HTTP ' + r.status).slice(0, 200));
-  return j?.data;
+  const once = async (p) => {
+    const url = new URL(apiBase() + p);
+    url.searchParams.set('apikey', process.env.MALVIN_KEY);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    let j = null;
+    try { j = await r.json(); } catch { /* not JSON */ }
+    if (!r.ok || j?.status === false) {
+      const e = new Error(String(j?.error || j?.message || 'Download service returned HTTP ' + r.status + ' for ' + p).slice(0, 200));
+      e.status = r.status;
+      throw e;
+    }
+    return j?.data;
+  };
+  try {
+    return await once(route);
+  } catch (e) {
+    // some of these APIs keep their paths under /api; if the plain path does not exist, try that one
+    if (e.status === 404 && !route.startsWith('/api/')) {
+      try { return await once('/api' + route); } catch (e2) { if (e2.status !== 404) throw e2; }
+    }
+    throw e;
+  }
+}
+// pulls the download link out of whatever shape the API answers with
+const linkOf = (d) => {
+  if (!d) return null;
+  if (typeof d === 'string') return /^https?:\/\//i.test(d) ? d : null;
+  for (const k of ['download_url', 'downloadUrl', 'url', 'audio', 'link', 'mp3']) {
+    if (typeof d[k] === 'string' && /^https?:\/\//i.test(d[k])) return d[k];
+  }
+  return null;
+};
+// Malvin API: /api/download/savenow takes ?url=<youtube link>&format=mp3 (audio) or 144..4k (video).
+// The other two general downloaders are tried if savenow fails.
+async function apiMedia(ytUrl, format) {
+  const errs = [];
+  for (const route of ['/api/download/savenow', '/api/download/aio2', '/api/download/9xbuddy']) {
+    try {
+      const d = await apiGet(route, { url: ytUrl, format }, 70000);
+      const link = linkOf(d);
+      if (link) return { link, title: d && d.title };
+      errs.push(route.split('/').pop() + ': no link in the answer');
+    } catch (e) { errs.push(route.split('/').pop() + ': ' + e.message); }
+  }
+  throw new Error(errs.join(' | ').slice(0, 300));
 }
 async function fetchBuf(url, maxMb) {
   const r = await fetch(url, { signal: AbortSignal.timeout(180000) });
@@ -111,11 +149,19 @@ let lastUpdate = 0;
 function updateYtdlp(force) {
   if (Date.now() - lastUpdate < (force ? 10 * 60 * 1000 : 6 * 3600 * 1000)) return Promise.resolve();
   lastUpdate = Date.now();
+  const say = (tag, out, errout, err) => String(out || errout || (err && err.message) || '').trim().split('\n').pop().slice(0, 160);
   return new Promise((ok) => {
-    execFile('yt-dlp', ['-U'], { timeout: 90000 }, (err, out, errout) => {
-      const line = String(out || errout || (err && err.message) || '').trim().split('\n').pop();
-      console.log('[extra] yt-dlp update:', line.slice(0, 160));
-      ok();
+    // the "nightly" build gets YouTube fixes first; if that is not possible, fall back to the normal update
+    execFile('yt-dlp', ['--update-to', 'nightly'], { timeout: 120000 }, (err, out, errout) => {
+      if (err) {
+        console.log('[extra] yt-dlp nightly update failed (' + say('n', out, errout, err) + '), trying normal update');
+        return execFile('yt-dlp', ['-U'], { timeout: 120000 }, (e2, o2, er2) => {
+          console.log('[extra] yt-dlp update:', say('u', o2, er2, e2));
+          execFile('yt-dlp', ['--version'], { timeout: 15000 }, (e3, o3) => { console.log('[extra] yt-dlp version:', String(o3 || '').trim()); ok(); });
+        });
+      }
+      console.log('[extra] yt-dlp update:', say('n', out, errout, err));
+      execFile('yt-dlp', ['--version'], { timeout: 15000 }, (e3, o3) => { console.log('[extra] yt-dlp version:', String(o3 || '').trim()); ok(); });
     });
   });
 }
@@ -195,8 +241,8 @@ async function audioOf(url, retried) {
     return audioOf(url, true);
   }
   const msg = lastErr?.message || '';
-  if (/sign in|not a bot|cookies|confirm you/i.test(msg)) {
-    throw new Error('YouTube is asking this server to prove it is not a bot. Add cookies (Railway variable YT_COOKIES) or use the download API.');
+  if (/sign in|not a bot|cookies|confirm you|needs to be reloaded/i.test(msg)) {
+    throw new Error('YouTube is rejecting this server (' + msg.replace(/^ERROR: \[youtube\] \S+: /, '').slice(0, 80) + '). Fix the download API address or add cookies (Railway variable YT_COOKIES).');
   }
   throw new Error(msg || 'Download failed.');
 }
@@ -212,19 +258,14 @@ async function music(ctx, asFile) {
   let buf;
   const problems = [];
 
-  // 1) the download API (if MALVIN_API + MALVIN_KEY are set), with one retry
+  // 1) the Malvin download API (if MALVIN_API + MALVIN_KEY are set)
   if (apiOn()) {
-    for (let attempt = 0; attempt < 2 && !buf; attempt++) {
-      try {
-        const d = await apiGet('/download/clutchplay', { query: /^https?:\/\//i.test(q) ? v.title : q });
-        const link = d?.audio || d?.mp3 || d?.download_url;
-        if (!link) throw new Error('the service returned no audio');
-        buf = await fetchBuf(link, MAX_MB);
-      } catch (e) {
-        console.error('[extra] download API attempt ' + (attempt + 1) + ' failed:', e.message);
-        if (attempt === 1) problems.push('Download API: ' + e.message);
-        else await new Promise((r) => setTimeout(r, 1500));
-      }
+    try {
+      const m = await apiMedia(v.url, 'mp3');
+      buf = await fetchBuf(m.link, MAX_MB);
+    } catch (e) {
+      console.error('[extra] download API failed:', e.message);
+      problems.push('Download API: ' + e.message);
     }
   } else {
     problems.push('Download API: not set (add MALVIN_API and MALVIN_KEY in Railway)');
@@ -270,16 +311,22 @@ function register(add) {
     if (!apiOn()) throw new Error('Video download is not set up yet. Add MALVIN_API and MALVIN_KEY in the Railway variables.');
     const q = ctx.text || ctx.quoted?.text;
     if (!q) throw new Error(`Usage: ${ctx.prefix}video <name or YouTube link>`);
-    let url = q;
+    let url = q, title = 'Video';
     if (!YT_URL.test(q)) {
-      const found = await apiGet('/download/clutchplay', { query: q });
-      if (!found?.url) throw new Error('No video found for your query.');
-      url = found.url;
+      const found = await findVideo(q);
+      if (!found) throw new Error('No results found.');
+      url = found.url; title = found.title;
     }
-    const r = await apiGet('/download/clutchyt', { url, quality: '720' });
-    if (!r?.video) throw new Error('Failed to fetch the video. Try again.');
-    const buf = await fetchBuf(r.video, 100);
-    const title = r.title || 'Video';
+    let buf, last;
+    for (const fmt of ['720', '360']) { // smaller quality if the file is too big
+      try {
+        const m = await apiMedia(url, fmt);
+        if (m.title) title = m.title;
+        buf = await fetchBuf(m.link, 100);
+        break;
+      } catch (e) { last = e; if (!/larger than/i.test(e.message)) break; }
+    }
+    if (!buf) throw new Error('Could not get that video. ' + (last ? last.message : ''));
     const quoted = { quoted: ctx.msg };
     if (buf.length > 50 * 1048576) await ctx.sock.sendMessage(ctx.jid, { document: buf, mimetype: 'video/mp4', fileName: title.replace(/[^\w\s.-]/g, '').slice(0, 80) + '.mp4', caption: '📄 ' + title }, quoted);
     else await ctx.sock.sendMessage(ctx.jid, { video: buf, mimetype: 'video/mp4', caption: '🎥 ' + title }, quoted);
@@ -468,4 +515,4 @@ async function passive(sock, m) {
   } catch (e) { console.error('[extra]', e.message); }
 }
 
-module.exports = { register, boot, passive, stickerCommand, apiOn, apiBase, apiGet, fetchBuf, toMp3, MAX_MB };
+module.exports = { register, boot, passive, stickerCommand, apiOn, apiBase, apiGet, apiMedia, findVideo, fetchBuf, toMp3, MAX_MB };
