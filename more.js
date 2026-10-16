@@ -90,6 +90,7 @@ function register(add) {
   registerExtra(add);
   require('./more2').register(add);
   require('./more3').register(add);
+  require('./more5').register(add);
   require('./community').register(add);
   require('./pulse').register(add);
 
