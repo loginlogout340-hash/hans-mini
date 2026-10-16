@@ -63,9 +63,17 @@ const linkOf = (d) => {
 };
 // Malvin API: /api/download/savenow takes ?url=<youtube link>&format=mp3 (audio) or 144..4k (video).
 // The other two general downloaders are tried if savenow fails.
+// Malvin API (same call the official MALVIN-XD bot uses for .play): /api/download/clutchplay?query=<name>
+// searches by name and returns a ready mp3 link in data.audio (plus title and url).
+async function apiClutchPlay(query) {
+  const d = await apiGet('/api/download/clutchplay', { query: String(query).slice(0, 150) }, 45000);
+  const link = (d && typeof d.audio === 'string' && /^https?:\/\//i.test(d.audio)) ? d.audio : linkOf(d);
+  if (!link) throw new Error('clutchplay: no link in the answer');
+  return { link, title: d && d.title };
+}
 async function apiMedia(ytUrl, format) {
   const errs = [];
-  for (const route of ['/api/download/savenow', '/api/download/aio2', '/api/download/9xbuddy']) {
+  for (const route of ['/api/download/savenow']) {
     try {
       const d = await apiGet(route, { url: ytUrl, format }, 70000);
       const link = linkOf(d);
@@ -261,7 +269,9 @@ async function music(ctx, asFile) {
   // 1) the Malvin download API (if MALVIN_API + MALVIN_KEY are set)
   if (apiOn()) {
     try {
-      const m = await apiMedia(v.url, 'mp3');
+      let m;
+      try { m = await apiClutchPlay(v.title + ' ' + (v.author?.name || '')); }
+      catch (e1) { console.error('[extra] clutchplay failed:', e1.message); problems.push('clutchplay: ' + e1.message); m = await apiMedia(v.url, 'mp3'); }
       buf = await fetchBuf(m.link, MAX_MB);
     } catch (e) {
       console.error('[extra] download API failed:', e.message);
