@@ -91,6 +91,7 @@ function register(add) {
   require('./more2').register(add);
   require('./more3').register(add);
   require('./more5').register(add);
+  require('./more6').register(add);
   require('./community').register(add);
   require('./pulse').register(add);
 
@@ -275,6 +276,7 @@ function boot(sock) {
   startScheduler(sock);
   require('./more2').boot(sock);
   require('./more3').boot(sock);
+  require('./more6').boot(sock);
   require('./community').boot(sock);
   require('./pulse').boot(sock);
   sock.ev.on('group-participants.update', async (ev) => {
