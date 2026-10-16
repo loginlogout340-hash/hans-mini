@@ -39,8 +39,11 @@ function fileItem(name, url) {
 
 // like extra.apiGet but returns the whole JSON (some endpoints do not use the {status,data} shape)
 async function apiRaw(route, params, timeoutMs = 30000) {
+  return extra.withKey((key) => apiRawKey(key, route, params, timeoutMs));
+}
+async function apiRawKey(key, route, params, timeoutMs) {
   const url = new URL(extra.apiBase() + route);
-  url.searchParams.set('apikey', process.env.MALVIN_KEY);
+  url.searchParams.set('apikey', key);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   let j = null;
