@@ -195,4 +195,24 @@ function register(add) {
   }, { aliases: ['yts', 'youtube'] });
 }
 
-module.exports = { register, boot, toSticker, parseWait };
+/* ---------------- always online: delivery ticks ----------------
+ * While .alwaysonline is ON, every message people send you gets an explicit "delivered" receipt (double grey tick)
+ * from the bot, and the bot shows as online right when the message arrives. This works even if your phone is off,
+ * as long as the bot itself is connected. Blue ticks are NOT sent (that stays up to .autoread / your privacy settings).
+ */
+const lastAck = new WeakMap();
+function passive(sock, m) {
+  try {
+    const hm = hmOf(sock);
+    if (!hm?.db?.alwaysOnline || !m?.key || m.key.fromMe) return;
+    const jid = m.key.remoteJid;
+    if (!jid || jid === 'status@broadcast' || jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) return;
+    if (!m.message || m.message.protocolMessage || m.message.reactionMessage) return;
+    const participant = jid.endsWith('@g.us') ? m.key.participant : undefined;
+    sock.sendReceipt(jid, participant, [m.key.id], undefined).catch(() => {}); // undefined type = "delivered"
+    const now = Date.now();
+    if (now - (lastAck.get(sock) || 0) > 5000) { lastAck.set(sock, now); sock.sendPresenceUpdate('available').catch(() => {}); }
+  } catch { /* never break message handling */ }
+}
+
+module.exports = { register, boot, passive, toSticker, parseWait };
