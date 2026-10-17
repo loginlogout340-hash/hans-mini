@@ -1,8 +1,6 @@
 'use strict';
 /**
  * Hans-Mini interface: welcome banner, "Get Started" list, styled menu, default picture.
- * Design: rounded frames, one icon per category, commands in compact lines (WhatsApp shows the left edge only,
- * so frames are open on the right and never look crooked).
  *
  * Default picture: put a file called menu.jpg (or .png) next to index.js in the repo,
  * or set the Railway variable MENU_IMAGE to a direct image link.
@@ -16,14 +14,10 @@ let B = {}; // { generateWAMessageFromContent, proto } from Baileys
 const init = (b) => { B = b || {}; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const norm = (j) => String(j || '').replace(/:\d+@/, '@');
-const LINE = '╾──────────────────╼';
-const BAR = '╰────────────────';
-const VERSION = (() => { try { return require('./package.json').version; } catch { return ''; } })();
-const CAT_ICON = {
-  general: '🏠', utility: '🧰', text: '✍️', fun: '🎉', games: '🎮', ai: '🤖', media: '🎵', downloader: '📥',
-  group: '👥', owner: '👑', info: 'ℹ️', community: '🌍', admin: '🛡️', tools: '🛠️', status: '📸',
-};
-const iconFor = (cat) => CAT_ICON[String(cat).toLowerCase()] || '✨';
+const LINE = '◁──────────────────▷';
+const ICON = { general: '🏠', ai: '🤖', media: '🎬', downloader: '📥', utility: '🧰', fun: '🎉', games: '🎮', text: '✍️', group: '👥', owner: '👑', community: '🌍', info: 'ℹ️', admin: '🛡️' };
+const ORDER = ['general', 'ai', 'media', 'downloader', 'utility', 'fun', 'games', 'text', 'group', 'owner', 'community', 'info', 'admin'];
+const icon = (c) => ICON[String(c).toLowerCase()] || '✨';
 
 let cachedImg; // picture is read once, then reused for every .menu
 function imageSource() {
@@ -62,34 +56,31 @@ function greeting(tz) {
 function banner(config, count, welcome) {
   const time = new Date().toLocaleTimeString('en-US', { timeZone: config.timezone, hour: '2-digit', minute: '2-digit' });
   const name = config.botName.toUpperCase();
-  const owner = config.ownerName || (config.owners[0] ? '+' + config.owners[0] : 'not set');
-  return [
-    '╭━━━━━━━━━━━━━━━━━━━━━━╮',
-    `┃    ✦ *${name}* ✦${VERSION ? '  _v' + VERSION + '_' : ''}`,
-    '╰━━━━━━━━━━━━━━━━━━━━━━╯',
-    `_${greeting(config.timezone)}_`,
-    ...(welcome ? [`Welcome back to *${name}*. Connection established ✅`] : []),
-    '',
-    '╭─ ⚙️ *STATUS*',
-    `│ ◦ Mode      *${config.mode}*`,
-    `│ ◦ Prefix    *${config.prefix}*`,
-    `│ ◦ Commands  *${count}*`,
-    `│ ◦ Time      *${time}*`,
-    `│ ◦ Owner     *${owner}*`,
-    BAR,
-  ].join('\n');
+  return `${LINE}
+| ツ ${greeting(config.timezone)}
+| ツ ${welcome ? 'Welcome back to' : 'This is'} ✦ *${name}* ✦${welcome ? ' Connection established.' : ''}
+
+✨ *Bot Name:* ${name}
+🔧 *Mode:* ${config.mode}
+➡️ *Prefix:* ${config.prefix}
+📚 *Commands:* ${count}
+🕒 *Time:* ${time}
+📖 *Library:* Baileys
+
+| ツ 👑 *Owner:* ${config.ownerName || (config.owners[0] ? '+' + config.owners[0] : 'not set')}
+${LINE}`;
 }
 
 const quickRows = (p) => [
-  { id: p + 'menu', title: '📜 Menu', description: 'View all commands' },
-  { id: p + 'settings', title: '⚙️ Settings', description: 'Bot configuration' },
-  { id: p + 'ping', title: '⚡ Ping', description: 'Check bot speed' },
-  { id: p + 'uptime', title: '⏱️ Uptime', description: 'How long the bot has been running' },
+  { id: p + 'menu', title: 'Menu', description: 'View all commands' },
+  { id: p + 'settings', title: 'Settings', description: 'Bot configuration' },
+  { id: p + 'ping', title: 'Ping', description: 'Check bot speed' },
+  { id: p + 'uptime', title: 'Uptime', description: 'How long bot has been running' },
 ];
 
 async function getStarted(sock, jid, config) {
   const rows = quickRows(config.prefix);
-  const plain = () => sock.sendMessage(jid, { text: `✨ *Your bot is ready!*\nPick an option to get started:\n\n╭─ 🚀 *QUICK START*\n` + rows.map((r) => `│ ◦ ${r.id}  _${r.description}_`).join('\n') + `\n${BAR}\n\n_Powered by ${config.botName.toUpperCase()}_` });
+  const plain = () => sock.sendMessage(jid, { text: `*Bot is ready!*\nPick an option to get started:\n\n` + rows.map((r) => `› ${r.id}  (${r.description})`).join('\n') + `\n\nPowered by ${config.botName.toUpperCase()}` });
   if (/^(off|false|0)$/i.test(process.env.MENU_BUTTONS || '') || !B.proto || !B.generateWAMessageFromContent) return plain();
   try {
     const content = {
@@ -97,10 +88,10 @@ async function getStarted(sock, jid, config) {
         message: {
           messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
           interactiveMessage: B.proto.Message.InteractiveMessage.create({
-            body: { text: '✨ *Your bot is ready!*\nTap *Get Started* below and pick what you want to do.' },
+            body: { text: '*Bot is ready!*\nPick an option below to get started.' },
             footer: { text: 'Powered by ' + config.botName.toUpperCase() },
             nativeFlowMessage: {
-              buttons: [{ name: 'single_select', buttonParamsJson: JSON.stringify({ title: '🚀 Get Started', sections: [{ title: 'Quick Actions', rows }] }) }],
+              buttons: [{ name: 'single_select', buttonParamsJson: JSON.stringify({ title: 'Get Started', sections: [{ title: 'Quick Actions', rows }] }) }],
             },
           }),
         },
@@ -130,26 +121,21 @@ function menuRun(commands) {
     // the Admin section is shown only on the admin's own bot, to its real owner
     let isAdminBot = false;
     try { isAdminBot = !!(process.env.ADMIN_NUMBER && ctx.isMainOwner && require('./manager').isAdmin(ctx.config.owners[0])); } catch { /* not admin */ }
-    const seen = new Set(); // a command name that exists twice is listed once (the first one is the one that runs)
-    const visible = commands.filter((c) => {
-      if (!isAdminBot && String(c.category).toLowerCase() === 'admin') return false;
-      if (seen.has(c.name)) return false;
+    const visible = commands.filter((c) => isAdminBot || String(c.category).toLowerCase() !== 'admin');
+    const cats = {}, seen = new Set();
+    for (const c of visible) {
+      if (seen.has(c.name)) continue; // the same command is never listed twice
       seen.add(c.name);
-      return true;
-    });
-    const cats = {};
-    for (const c of visible) (cats[c.category] = cats[c.category] || []).push(c);
-    // the most used sections first, the rest in the order they were added
-    const ORDER = ['general', 'ai', 'media', 'downloader', 'utility', 'fun', 'games', 'text', 'group', 'owner', 'community', 'info', 'admin'];
-    const rank = (k) => { const i = ORDER.indexOf(String(k).toLowerCase()); return i < 0 ? ORDER.length : i; };
-    const sorted = Object.entries(cats).sort((x, y) => rank(x[0]) - rank(y[0]));
-    const p = ctx.prefix;
-    const head = banner(ctx.config, visible.length, false) + '\n';
-    let list = '';
-    for (const [cat, items] of sorted) {
-      list += `\n╭─ ${iconFor(cat)} *${cat.toUpperCase()}*  _${items.length}_\n│ ${items.map((c) => p + c.name).join(' · ')}\n${BAR}\n`;
+      (cats[c.category] = cats[c.category] || []).push(c);
     }
-    list += `\n💡 Type *${p}help <command>* for details.\n_${ctx.config.botName.toUpperCase()}${VERSION ? ' v' + VERSION : ''} · by ${ctx.config.ownerName || 'the owner'}_`;
+    const p = ctx.prefix;
+    const head = banner(ctx.config, seen.size, false);
+    const rank = (k) => { const i = ORDER.indexOf(String(k).toLowerCase()); return i < 0 ? 99 : i; };
+    let list = '';
+    for (const [cat, items] of Object.entries(cats).sort((a, b) => rank(a[0]) - rank(b[0]))) {
+      list += `\n┏━━ ${icon(cat)} *${cat.toUpperCase()}* ━━ ✦ ${items.length}\n` + items.map((c) => `┃ ✧ ${p}${c.name}`).join('\n') + '\n┗━━━━━━━━━━━━━━━━━\n';
+    }
+    list += `\n💡 Type *${p}help <command>* for details.\n${LINE}\n_✦ ${ctx.config.botName} · made with ❤️ ✦_`;
     // ONE message: the picture with the banner AND the whole command list as its caption
     const img = imageSource();
     if (img) {
@@ -165,31 +151,7 @@ function register(add) {
   add('start', 'General', '', 'Show the Get Started quick-actions list', (ctx) => getStarted(ctx.sock, ctx.jid, ctx.config), { aliases: ['getstarted'] });
   add('settings', 'Owner', '', 'Show the current bot settings', (ctx) => {
     const c = ctx.config, p = ctx.prefix, on = (v) => (v ? '✅ ON' : '❌ OFF');
-    const db = ctx.sock.hm?.db || {};
-    return [
-      '⚙️ *SETTINGS*',
-      '',
-      '╭─ 🔧 *GENERAL*',
-      `│ ◦ Mode: *${c.mode}*  _(${p}mode public|private)_`,
-      `│ ◦ Prefix: *${p}*  _(${p}setprefix)_`,
-      `│ ◦ Multi prefix: ${on(c.multiPrefix)}  _(${p}multiprefix)_`,
-      `│ ◦ Always online: _(${p}alwaysonline on|off)_`,
-      BAR,
-      '╭─ 📸 *STATUS*',
-      `│ ◦ Auto view: ${on(c.autoStatus)}  _(${p}autostatus)_`,
-      `│ ◦ Auto like: ${on(c.autoLikeStatus)} ${c.likeEmoji}  _(${p}autolikestatus)_`,
-      BAR,
-      '╭─ 🛡️ *PROTECTION*',
-      `│ ◦ Anti view-once: ${on(c.antiViewOnce)}  _(${p}antiviewonce)_`,
-      `│ ◦ Anti delete: ${on(c.antiDelete)}  _(${p}antidelete)_`,
-      `│ ◦ Group guards: _${p}antitag, ${p}antigroupmention, ${p}antisticker, ${p}antilink_`,
-      `│ ◦ Group messages: _${p}welcome, ${p}goodbye_`,
-      BAR,
-      '╭─ 👤 *PEOPLE & TIMERS*',
-      `│ ◦ Scheduled messages: *${(db.schedules || []).length}*  _(${p}schedule)_`,
-      `│ ◦ Sudo users: *${(db.sudo || []).length}*  _(${p}setsudo, ${p}delsudo)_`,
-      BAR,
-    ].join('\n');
+    return `⚙️ *Settings*\n${LINE}\nMode: *${c.mode}*   (${p}mode public|private)\nPrefix: *${p}*\nAuto view status: ${on(c.autoStatus)}   (${p}autostatus)\nAuto like status: ${on(c.autoLikeStatus)} ${c.likeEmoji}   (${p}autolikestatus)\nAnti view-once: ${on(c.antiViewOnce)}   (${p}antiviewonce)\nAnti delete: ${on(c.antiDelete)}   (${p}antidelete)\nAlways online: (${p}alwaysonline on|off)\nGroup guards: (${p}antitag, ${p}antigroupmention, ${p}antisticker, ${p}antilink)\nGroup messages: (${p}welcome, ${p}goodbye)\nMulti prefix: ${on(c.multiPrefix)}   (${p}multiprefix, ${p}setprefix)\nScheduled messages: ${(ctx.sock.hm?.db?.schedules || []).length}   (${p}schedule)\nSudo users: ${(ctx.sock.hm?.db?.sudo || []).length}   (${p}setsudo, ${p}delsudo)\n${LINE}`;
   }, { owner: true, aliases: ['config'] });
 }
 
