@@ -12,19 +12,22 @@ const { createBot } = require('./bot');
 
 const DATA_DIR = process.env.DATA_DIR || process.env.SESSION_DIR || './data';
 const USERS_DIR = path.join(DATA_DIR, 'users');
-const MAX_USERS = parseInt(process.env.MAX_USERS, 10) || 10;
+const MAX_USERS = parseInt(process.env.MAX_USERS, 10) || 25; // people, not counting the admin's own bot
 const PAIR_WINDOW_MS = 4 * 60 * 1000; // how long a pairing code stays usable before the attempt is cleaned up
 
 class UserError extends Error {}
 
 const bots = new Map(); // number -> { bot, timer, fresh, announced }
+const ADMIN_N = String(process.env.ADMIN_NUMBER || '').replace(/\D/g, '');
+/** how many people count against MAX_USERS (the admin's own bot is free) */
+const countUsers = () => bots.size - (ADMIN_N && bots.has(ADMIN_N) ? 1 : 0);
 
 /* ---------- admin: who is allowed, who is banned, alerts ---------- */
 const ADMIN = String(process.env.ADMIN_NUMBER || '').replace(/\D/g, '');
 const ADMIN_FILE = path.join(DATA_DIR, 'admin.json');
 let admin = { banned: [], watch: false };
 try { admin = { ...admin, ...JSON.parse(fs.readFileSync(ADMIN_FILE, 'utf8')) }; } catch { /* first run */ }
-const saveAdmin = () => { try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(ADMIN_FILE, JSON.stringify(admin)); } catch (e) { console.error('could not save admin.json:', e.message); } };
+const saveAdmin = () => { try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(ADMIN_FILE + '.tmp', JSON.stringify(admin)); fs.renameSync(ADMIN_FILE + '.tmp', ADMIN_FILE); } catch (e) { console.error('could not save admin.json:', e.message); } };
 
 /** sends a WhatsApp message to the admin, from the admin's own bot (message yourself) */
 function notifyAdmin(text) {
@@ -81,7 +84,7 @@ function startBot(number) {
     onEvent: (type, d) => {
       if (type === 'connected' && entry?.fresh && !entry.announced) {
         entry.announced = true;
-        notifyAdmin(`🟢 *New user linked*\n+${number}${d.name ? ' (' + d.name + ')' : ''}\nUsers: ${bots.size}/${MAX_USERS}`);
+        notifyAdmin(`🟢 *New user linked*\n+${number}${d.name ? ' (' + d.name + ')' : ''}\nUsers: ${countUsers()}/${MAX_USERS}`);
       } else if (type === 'loggedout' && number !== ADMIN) {
         notifyAdmin(`🔴 *User unlinked*\n+${number}`);
       } else if (type === 'command' && admin.watch && number !== ADMIN) {
@@ -106,7 +109,7 @@ async function pair(rawNumber) {
     throw new UserError('This number is already linked to the bot.');
   }
   if (admin.banned.includes(number)) throw new UserError('This number is not allowed to use the bot.');
-  if (bots.size >= MAX_USERS) throw new UserError('The bot is full right now. Please try again later.');
+  if (number !== ADMIN_N && countUsers() >= MAX_USERS) throw new UserError('The bot is full right now. Please try again later.');
 
   const entry = startBot(number);
   entry.fresh = true; // a brand-new user: the admin gets an alert when the link completes
@@ -151,7 +154,7 @@ async function restoreAll() {
   console.log(`Restored ${started} saved user(s).`);
 }
 
-const stats = () => ({ users: bots.size, max: MAX_USERS });
+const stats = () => ({ users: countUsers(), max: MAX_USERS });
 
 /* ---------- admin tools (used by the admin commands in admin.js) ---------- */
 const isAdmin = (n) => !!ADMIN && String(n) === ADMIN;
