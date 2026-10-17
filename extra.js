@@ -22,6 +22,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
+const heavy = require('./limit').run; // limits how many ffmpeg / yt-dlp jobs run at once
 const yts = require('yt-search');
 
 const MAX_MB = 40;
@@ -125,7 +126,7 @@ function toMp3(buf) {
   const base = path.join(os.tmpdir(), 'hm-cv-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
   return new Promise((ok) => {
     try { fs.writeFileSync(base + '.in', buf); } catch { return ok(buf); }
-    execFile('ffmpeg', ['-y', '-i', base + '.in', '-vn', '-acodec', 'libmp3lame', '-q:a', '5', base + '.mp3'], { timeout: 120000 }, (err) => {
+    heavy('ffmpeg', ['-y', '-i', base + '.in', '-vn', '-acodec', 'libmp3lame', '-q:a', '5', base + '.mp3'], { timeout: 120000 }, (err) => {
       let out = buf;
       if (!err) { try { out = fs.readFileSync(base + '.mp3'); } catch { /* keep original */ } }
       for (const e of ['in', 'mp3']) fs.unlink(base + '.' + e, () => {});
@@ -144,7 +145,7 @@ function newState(dir) {
   const save = () => {
     if (!file) return;
     clearTimeout(t);
-    t = setTimeout(() => { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(db)); } catch { /* ignore */ } }, 500);
+    t = setTimeout(() => { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file + '.tmp', JSON.stringify(db)); fs.renameSync(file + '.tmp', file); } catch { /* ignore */ } }, 500);
   };
   return { db, save, timer: null, meta: new Map(), owner: dir ? path.basename(dir) : '', games: { guess: {}, trivia: {} } };
 }
@@ -168,7 +169,7 @@ async function findVideo(q) {
 }
 function run(args) {
   return new Promise((ok, no) => {
-    execFile('yt-dlp', args, { timeout: 180000, maxBuffer: 1 << 24 }, (err, out, errout) => {
+    heavy('yt-dlp', args, { timeout: 180000, maxBuffer: 1 << 24 }, (err, out, errout) => {
       if (err) return no(new Error(String(errout || err.message).split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 250)));
       ok(out);
     });
@@ -214,7 +215,7 @@ function cookiesFile() {
 
 function runYt(args, timeoutMs) {
   return new Promise((ok, no) => {
-    execFile('yt-dlp', args, { timeout: timeoutMs, maxBuffer: 1 << 24 }, (err, out, errout) => {
+    heavy('yt-dlp', args, { timeout: timeoutMs, maxBuffer: 1 << 24 }, (err, out, errout) => {
       if (err) return no(new Error(String(errout || err.message).split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 250)));
       ok(out);
     });
