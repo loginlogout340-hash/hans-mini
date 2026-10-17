@@ -34,6 +34,13 @@ function notifyAdmin(text) {
   if (!e || !e.bot.isOpen()) return;
   e.bot.sendText(ADMIN + '@s.whatsapp.net', text).catch(() => {});
 }
+/** sends a WhatsApp message to any number from the admin's own bot (used for payment codes). Returns true when sent. */
+async function sendFromAdmin(number, text) {
+  if (!ADMIN) return false;
+  const e = bots.get(ADMIN);
+  if (!e || !e.bot.isOpen()) return false;
+  try { await e.bot.sendText(String(number).replace(/\D/g, '') + '@s.whatsapp.net', text); return true; } catch { return false; }
+}
 const dirFor = (n) => path.join(USERS_DIR, n);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -183,4 +190,4 @@ const banned = () => [...admin.banned];
 function setWatch(on) { admin.watch = !!on; saveAdmin(); }
 const isWatching = () => admin.watch;
 
-module.exports = { pair, status, restoreAll, stats, users, removeUser, unban, banned, setWatch, isWatching, isAdmin, UserError, MAX_USERS, DATA_DIR };
+module.exports = { notifyAdmin, sendFromAdmin, pair, status, restoreAll, stats, users, removeUser, unban, banned, setWatch, isWatching, isAdmin, UserError, MAX_USERS, DATA_DIR };
