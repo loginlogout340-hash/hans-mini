@@ -20,7 +20,6 @@ A multi-user WhatsApp bot with **170+ commands**, built on Baileys. Visitors ope
 | `index.js` | Starts the website and restores every linked user |
 | `server.js`, `page.js` | The pairing + payment website (`/`, `/admin`, `/pulse/<token>`, `/health`) |
 | `codes.js` | Paid and manual access codes, price and plan length |
-| `momo.js` | Manual Mobile Money payments: Transaction ID requests that you approve on WhatsApp |
 | `manager.js` | Keeps one bot per user, user limit, bans |
 | `bot.js` | One user's WhatsApp connection and command handling |
 | `limit.js` | Keeps heavy jobs (ffmpeg, yt-dlp) from running all at once |
@@ -52,8 +51,6 @@ A multi-user WhatsApp bot with **170+ commands**, built on Baileys. Visitors ope
 |---|---|
 | `PAYSTACK_SECRET` | Paystack secret key. Turns on the Pay button. Keep it only in Railway |
 | `ADMIN_KEY` | Password for the `/admin` page (manual codes, price) |
-| `MOMO_NUMBER`, `MOMO_NAME`, `MOMO_NETWORK` | Turns on the **Pay with MoMo** tab: the number people send money to, the account name and the network (for example `MTN MoMo`). See "Mobile Money payments" below |
-| `MOMO_SMS_KEY` | A secret of 8+ characters. Turns on automatic approval from your phone's MoMo SMS (see below) |
 | `PRICE_GHS`, `PLAN_DAYS` | First-time price and plan length (default 20 and 30). Change them later on `/admin` |
 | `TUTORIAL_URL` | Link to your tutorial video (shows a Watch tutorial button) |
 
@@ -110,26 +107,6 @@ Community: community, csay
 Admin (admin bot only): users, removeuser, banuser, unbanuser, banned, watch, requests, approve, reject, broadcast, msguser, cmute, cunmute, cban, cunban, cpin, cannounce, cwho, cclose, copen
 
 Many commands also have short aliases (see `.help <command>`).
-
-## Mobile Money payments (checked by you)
-
-No Paystack needed. Set `MOMO_NUMBER` (and `MOMO_NAME`, `MOMO_NETWORK`) and `ADMIN_NUMBER` on Railway.
-
-1. The visitor sends the money to your MoMo number, then enters their WhatsApp number and the **Transaction ID** from the MoMo message on the pairing website.
-2. You get a WhatsApp message on your admin bot with a short reference (for example `K7F2P`), their number, name and Transaction ID.
-3. Compare it with the MoMo message on your own phone, then reply `.approve K7F2P` (or `.reject K7F2P wrong id`). The `/admin` page has the same Approve and Reject buttons.
-4. Their page fills in their one-time access code by itself, and the code is also sent to their WhatsApp. The code only works for their number and ends with the plan.
-
-`.requests` shows everything waiting. A Transaction ID can only be used once.
-
-### Automatic approval (you do not need to be online)
-
-Install MacroDroid (Android) on the phone that receives the MoMo money, set `MOMO_SMS_KEY` on Railway, and make one macro:
-
-- Trigger: **SMS Received**, any number, message contains `received`.
-- Action: **HTTP Request**, method POST, URL `https://YOUR-DOMAIN/api/momo/sms?key=YOUR_MOMO_SMS_KEY`, content type `text/plain`, body `{sms_message}`.
-
-When the Transaction ID in that SMS matches a request and the amount is at least the price, the code is issued by itself and sent to the buyer; you get a WhatsApp note. Anything that does not match (wrong amount, unknown ID) stays waiting for `.approve` / `.reject`.
 
 ## Hanson, the AI assistant
 
