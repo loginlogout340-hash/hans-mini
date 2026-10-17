@@ -28,13 +28,14 @@ const manager = require('./manager');
 const page = require('./page');
 const codes = require('./codes');
 const pulse = require('./pulse');
+const momo = require('./momo');
 
 const BOT_NAME = process.env.BOT_NAME || 'Hans-Mini';
 const OWNER_CODES = (process.env.ACCESS_CODE || '').split(',').map((s) => s.trim()).filter(Boolean);
 const PAYSTACK = (process.env.PAYSTACK_SECRET || '').trim();
 const ADMIN_KEY = (process.env.ADMIN_KEY || '').trim();
 const TUTORIAL = (process.env.TUTORIAL_URL || '').trim();
-const RESTRICTED = OWNER_CODES.length > 0 || !!PAYSTACK || !!ADMIN_KEY;
+const RESTRICTED = OWNER_CODES.length > 0 || !!PAYSTACK || !!ADMIN_KEY || momo.enabled();
 
 const sha = (s) => crypto.createHash('sha256').update(String(s)).digest();
 const same = (a, b) => crypto.timingSafeEqual(sha(a), sha(b));
@@ -128,13 +129,23 @@ button{background:#25d366;color:#04210f;font-weight:600;border:0;cursor:pointer}
 <div id="login"><div class="row"><input id="key" type="password" placeholder="Admin key"><button id="go">Open</button></div><div id="e" class="bad"></div></div>
 <div id="app" style="display:none">
 <h2>Price</h2><div class="row"><input id="price" inputmode="decimal" placeholder="Price GH₵"><input id="days" inputmode="numeric" placeholder="Days"><button id="saveS">Save</button></div><div id="sm" class="m"></div>
+<h2>Payment requests</h2><div id="rq"></div>
 <h2>Make a code by hand (for MoMo payments)</h2><div class="row"><input id="num" inputmode="numeric" placeholder="233241234567"><input id="d2" inputmode="numeric" placeholder="Days (default plan)"><button id="mk">Create</button></div><div id="cm" class="m"></div>
 <h2>Codes</h2><div id="list"></div></div></div>
 <script>
 var K='',$=function(i){return document.getElementById(i)};
 function api(p,b){return fetch(p,{method:b?'POST':'GET',headers:{'x-admin-key':K,'content-type':'application/json'},body:b?JSON.stringify(b):undefined}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||'Error');return j})})}
 function dt(t){return new Date(t).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function load(){api('/api/admin/list').then(function(j){$('price').value=j.settings.price;$('days').value=j.settings.days;
+ $('rq').innerHTML=(j.requests&&j.requests.length)?'':'<div class="m">No payment requests yet.</div>';
+ (j.requests||[]).forEach(function(r){var d=document.createElement('div');d.className='item';
+  var st=r.status==='pending'?'<span class="bad">waiting for you</span>':r.status==='approved'?'<span class="ok">approved</span>':'<span class="m">rejected</span>';
+  d.innerHTML='<div><b>'+esc(r.ref)+'</b> · +'+esc(r.number)+(r.name?' · '+esc(r.name):'')+'<div class="m">Transaction ID <code>'+esc(r.txn)+'</code> · GH₵'+esc(r.amount)+' · '+st+(r.code?' · <code>'+esc(r.code)+'</code>':'')+'</div></div>';
+  if(r.status==='pending'){var a=document.createElement('button');a.textContent='Approve';a.onclick=function(){api('/api/admin/approve',{ref:r.ref}).then(load).catch(function(e){alert(e.message)})};
+   var x=document.createElement('button');x.className='s';x.textContent='Reject';x.onclick=function(){api('/api/admin/reject',{ref:r.ref,reason:''}).then(load)};
+   var w=document.createElement('div');w.style.cssText='display:flex;gap:6px';w.appendChild(a);w.appendChild(x);d.appendChild(w)}
+  $('rq').appendChild(d)});
  $('list').innerHTML=j.codes.length?'':'<div class="m">No codes yet.</div>';
  j.codes.forEach(function(c){var d=document.createElement('div');d.className='item';
   d.innerHTML='<div><code>'+c.code+'</code><div class="m">+'+c.number+' · '+c.source+' · '+(c.active?'<span class="ok">active until '+dt(c.expiresAt)+'</span>':'<span class="bad">ended '+dt(c.expiresAt)+'</span>')+'</div></div>';
@@ -160,7 +171,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && p === '/api/info') {
       const s = codes.settings();
-      return send(res, 200, { name: BOT_NAME, restricted: RESTRICTED, payments: !!PAYSTACK, price: s.price, days: s.days, tutorial: TUTORIAL || null });
+      return send(res, 200, { name: BOT_NAME, restricted: RESTRICTED, payments: !!PAYSTACK, momo: momo.enabled() ? momo.details() : null, price: s.price, days: s.days, tutorial: TUTORIAL || null });
     }
 
     if (req.method === 'GET' && p === '/api/status') {
@@ -235,6 +246,23 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, 'ok');
     }
 
+    /* ----- manual Mobile Money: the visitor sends the Transaction ID, you approve it on WhatsApp ----- */
+    if (req.method === 'POST' && p === '/api/momo/submit') {
+      if (!momo.enabled()) return send(res, 404, { error: 'Mobile Money payment is not switched on.' });
+      if (limited('ms:' + ip, 25, 3600000)) return send(res, 429, { error: 'Too many attempts. Please wait a while and try again.' });
+      const b = await readJson(req);
+      let r;
+      try { r = momo.submit({ number: b.number, txn: b.txn, name: b.name }); }
+      catch (e) { if (e instanceof momo.MomoError) throw new manager.UserError(e.message); throw e; }
+      const rec = momo.find(r.ref);
+      manager.notifyAdmin(momo.adminText(rec));
+      return send(res, 200, { key: r.key, ref: r.ref });
+    }
+    if (req.method === 'GET' && p === '/api/momo/status') {
+      if (limited('mst:' + ip, 300, 600000)) return send(res, 429, { error: 'Too many requests. Wait a few minutes.' });
+      return send(res, 200, momo.status(url.searchParams.get('key')));
+    }
+
     /* ----- Hans Pulse dashboard (private link per user) ----- */
     if (p.startsWith('/pulse/') || p.startsWith('/api/pulse/')) {
       if (limited('pu:' + ip, 240, 600000)) return send(res, 429, { error: 'Too many requests. Wait a few minutes.' });
@@ -246,7 +274,19 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/api/admin/')) {
       if (limited('a:' + ip, 60, 600000)) return send(res, 429, { error: 'Too many requests.' });
       if (!adminOk(req)) return send(res, 401, { error: 'Wrong admin key.' });
-      if (req.method === 'GET' && p === '/api/admin/list') return send(res, 200, { settings: codes.settings(), codes: codes.list() });
+      if (req.method === 'GET' && p === '/api/admin/list') return send(res, 200, { settings: codes.settings(), codes: codes.list(), requests: momo.recent(20), momo: momo.enabled() });
+      if (req.method === 'POST' && p === '/api/admin/approve') {
+        const b = await readJson(req);
+        try {
+          const r = momo.approve(b.ref);
+          if (!r.again) manager.sendFromAdmin(r.request.number, momo.userText(r.code, r.expiresAt, originOf(req)));
+          return send(res, 200, { code: r.code, number: r.request.number, expiresAt: r.expiresAt || null });
+        } catch (e) { throw new manager.UserError(e.message); }
+      }
+      if (req.method === 'POST' && p === '/api/admin/reject') {
+        const b = await readJson(req);
+        try { momo.reject(b.ref, b.reason); return send(res, 200, { ok: true }); } catch (e) { throw new manager.UserError(e.message); }
+      }
       if (req.method === 'POST' && p === '/api/admin/create') {
         const b = await readJson(req);
         try { const r = codes.issue({ number: b.number, days: b.days || undefined, source: 'manual' }); return send(res, 200, { code: r.code, number: r.number, expiresAt: r.expiresAt }); }
