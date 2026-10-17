@@ -15,6 +15,7 @@ const extra = require('./extra');
 const { unwrap, getText, isViewOnce, makeForwarder } = require('./media');
 const ui = require('./ui');
 const statusMod = require('./status'); // NEW: auto view / auto like status logic
+const moreFive = require('./more5');
 const hanson = require('./hanson'); // Hanson, the built-in AI assistant (turned on with .hanson on)
 
 // name/alias -> command (shared by every user, built once)
@@ -273,6 +274,8 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       logger,
       browser: B.Browsers ? B.Browsers.ubuntu('Chrome') : ['Ubuntu', 'Chrome', '22.04.4'],
       markOnlineOnConnect: false,
+      // .onetick: private chats are ignored at connection level, so the bot never confirms them (see more5.js)
+      shouldIgnoreJid: (jid) => moreFive.oneTickIgnore(sock, jid),
       // when a phone cannot decrypt a message it asks for it again; without this the chat shows
       // "Waiting for this message. This may take a while."
       getMessage: async (key) => store.get(key.id)?.msg?.message || undefined,
