@@ -91,6 +91,20 @@ async function readJson(req) {
   try { return JSON.parse(raw || '{}'); } catch { throw new manager.UserError('Bad request.'); }
 }
 
+/** the SMS text from whatever the forwarding app sends: plain text, JSON or a form */
+function smsText(raw) {
+  raw = String(raw || '').trim();
+  if (!raw) return '';
+  if (raw[0] === '{') { try { return Object.values(JSON.parse(raw)).filter((v) => typeof v === 'string').join(' '); } catch { /* plain */ } }
+  if (/^[\w.-]+=/.test(raw) && raw.includes('&')) { try { return [...new URLSearchParams(raw).values()].join(' '); } catch { /* plain */ } }
+  return raw;
+}
+/** a payment was confirmed by the phone SMS: tell the buyer and you */
+function announceAuto(req, a) {
+  manager.sendFromAdmin(a.request.number, momo.userText(a.code, a.expiresAt, originOf(req)));
+  manager.notifyAdmin(`✅ Auto-approved *${a.request.ref}*: +${a.request.number}, Transaction ID ${a.request.txn}, GH₵${a.request.amount}. Code sent to them.`);
+}
+
 /* ---------------- Paystack ---------------- */
 async function paystack(method, route, body) {
   const r = await fetch('https://api.paystack.co' + route, {
@@ -256,8 +270,23 @@ const server = http.createServer(async (req, res) => {
       try { r = momo.submit({ number: b.number, txn: b.txn, name: b.name }); }
       catch (e) { if (e instanceof momo.MomoError) throw new manager.UserError(e.message); throw e; }
       const rec = momo.find(r.ref);
-      manager.notifyAdmin(momo.adminText(rec));
+      const auto = momo.tryAuto(rec);
+      if (auto) announceAuto(req, auto);
+      else manager.notifyAdmin(momo.adminText(rec));
       return send(res, 200, { key: r.key, ref: r.ref });
+    }
+    /* your phone forwards each MoMo "money received" SMS here; matching requests are approved by themselves */
+    if ((req.method === 'POST' || req.method === 'GET') && p === '/api/momo/sms') {
+      if (!momo.smsEnabled()) return send(res, 404, { error: 'Not switched on.' });
+      if (limited('sms:' + ip, 120, 600000)) return send(res, 429, { error: 'Too many requests.' });
+      const key = url.searchParams.get('key') || req.headers['x-key'] || '';
+      if (!momo.smsKeyOk(key)) return send(res, 403, { error: 'Wrong key.' });
+      let text = url.searchParams.get('text') || url.searchParams.get('message') || '';
+      if (req.method === 'POST') text = smsText(await readRaw(req, 8192)) || text;
+      const out = momo.ingestSms(text);
+      for (const a of out.approved) announceAuto(req, a);
+      if (out.parsed && !out.approved.length) manager.notifyAdmin(`📩 MoMo SMS read: GH₵${out.parsed.amount} from ${out.parsed.from || '?'}, Transaction ID ${out.parsed.txn}. Waiting for the buyer to send this ID.`);
+      return send(res, 200, { ok: true, read: !!out.parsed, approved: out.approved.length });
     }
     if (req.method === 'GET' && p === '/api/momo/status') {
       if (limited('mst:' + ip, 300, 600000)) return send(res, 429, { error: 'Too many requests. Wait a few minutes.' });
