@@ -27,6 +27,18 @@ module.exports = (botName) => `<!doctype html>
   .card { background:var(--card); border:1px solid var(--line); border-radius:20px; padding:20px; backdrop-filter:blur(8px); }
   .tabs { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:5px; margin-bottom:6px; background:rgba(0,0,0,.28); border-radius:13px; }
   .tabs.one { grid-template-columns:1fr; }
+  .tabs.three { grid-template-columns:1fr 1fr 1fr; }
+  .tabs.three .tab { font-size:13px; padding:10px 2px; }
+  .momo { margin:12px 0 2px; padding:14px; border:1px solid var(--line); border-radius:14px; background:rgba(255,209,102,.06); }
+  .momo .to { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin:6px 0 2px; }
+  .momo .num { font:700 22px/1.2 ui-monospace,Menlo,Consolas,monospace; letter-spacing:1px; color:var(--gold); }
+  .momo small { display:block; color:var(--mute); font-size:13px; }
+  .momo ol { margin:10px 0 0; padding-left:20px; color:#cfe0d6; font-size:14px; }
+  .copy-s { padding:7px 12px; font-size:13px; color:var(--text); background:transparent; border:1px solid var(--line); border-radius:9px; cursor:pointer; }
+  .wait { text-align:center; padding:6px 0 2px; }
+  .wait .dots { font-size:34px; letter-spacing:6px; color:var(--accent); animation:blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity:.35; } }
+  @media (prefers-reduced-motion: reduce) { .wait .dots { animation:none; } }
   .tab { margin:0; padding:10px 6px; font-size:14px; font-weight:600; color:var(--mute); background:transparent; border:0; border-radius:9px; cursor:pointer; }
   .tab.on { color:#04210f; background:var(--accent); }
   label { display:block; margin:14px 0 6px; font-size:13px; color:var(--mute); }
@@ -68,14 +80,28 @@ module.exports = (botName) => `<!doctype html>
 
   <div class="card">
     <div id="tabs" class="tabs hide">
-      <button class="tab on" id="tPay" type="button">Pay and join</button>
+      <button class="tab on" id="tPay" type="button">Pay online</button>
+      <button class="tab" id="tMomo" type="button">Pay with MoMo</button>
       <button class="tab" id="tCode" type="button">I have a code</button>
     </div>
 
     <form id="form" autocomplete="off">
       <div id="payInfo" class="hide">
         <div class="price"><b id="price">GH₵20</b><span id="per">for 1 month</span></div>
-        <p class="hint">Pay with Mobile Money or card. Your access code arrives right after.</p>
+        <p class="hint" id="payHint">Pay with Mobile Money or card. Your access code arrives right after.</p>
+      </div>
+
+      <div id="momoBox" class="hide">
+        <div class="momo">
+          <b>1. Send the money</b>
+          <div class="to"><span class="num" id="momoNum"></span><button class="copy-s" id="momoCopy" type="button">Copy</button></div>
+          <small id="momoWho"></small>
+          <ol><li>Send <b id="momoAmt"></b> to the number above.</li><li>Copy the <b>Transaction ID</b> from the confirmation message.</li><li>Type it below. We check it and give you a one-time code.</li></ol>
+        </div>
+        <label for="txn">Transaction ID from your MoMo message</label>
+        <input id="txn" autocapitalize="characters" placeholder="For example 12345678901" autocomplete="off">
+        <label for="payer">Name on the MoMo account (optional)</label>
+        <input id="payer" placeholder="Your name" autocomplete="off">
       </div>
 
       <label for="number">Your WhatsApp number (with country code)</label>
@@ -95,6 +121,15 @@ module.exports = (botName) => `<!doctype html>
       <div id="note" class="ok-note hide"></div>
       <div id="err" class="err" role="alert"></div>
     </form>
+
+    <div id="wait" class="hide">
+      <div class="wait"><div class="dots" aria-hidden="true">...</div>
+        <p><b>Waiting for confirmation</b></p>
+        <p class="hint" id="waitMsg">We sent your Transaction ID. This page fills in your code by itself as soon as the payment is checked, usually within a few minutes. You can keep this page open.</p>
+        <p class="hint">Reference <b id="waitRef"></b></p>
+      </div>
+      <button id="waitCancel" class="ghost" type="button">Send a different Transaction ID</button>
+    </div>
 
     <div id="result" class="hide">
       <label>Your pairing code</label>
@@ -127,7 +162,7 @@ module.exports = (botName) => `<!doctype html>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
   var form = $('form'), err = $('err'), go = $('go'), result = $('result'), statusEl = $('status'), note = $('note');
-  var timer = null, number = '', info = { restricted: false, payments: false }, mode = 'code';
+  var timer = null, mtimer = null, number = '', info = { restricted: false, payments: false, momo: null }, mode = 'code';
 
   function store(k, v) { try { if (v == null) return sessionStorage.getItem(k); sessionStorage.setItem(k, v); } catch (e) { return null; } }
   function showError(m) { err.textContent = m || ''; }
@@ -139,15 +174,19 @@ module.exports = (botName) => `<!doctype html>
   /* which tab is showing */
   function setMode(m) {
     mode = m;
-    $('tPay').className = 'tab' + (m === 'pay' ? ' on' : '');
+    $('tPay').className = 'tab' + (m === 'pay' ? ' on' : '') + (info.payments ? '' : ' hide');
+    $('tMomo').className = 'tab' + (m === 'momo' ? ' on' : '') + (info.momo ? '' : ' hide');
     $('tCode').className = 'tab' + (m === 'code' ? ' on' : '');
-    $('payInfo').className = m === 'pay' ? '' : 'hide';
+    $('payInfo').className = (m === 'pay' || m === 'momo') ? '' : 'hide';
+    $('payHint').className = m === 'pay' ? 'hint' : 'hide';
+    $('momoBox').className = m === 'momo' ? '' : 'hide';
     $('emailBox').className = m === 'pay' ? '' : 'hide';
     $('accessBox').className = (m === 'code' && info.restricted) ? '' : 'hide';
-    go.textContent = m === 'pay' ? 'Pay with Paystack' : 'Get pairing code';
+    go.textContent = m === 'pay' ? 'Pay with Paystack' : m === 'momo' ? 'I have paid' : 'Get pairing code';
     showError('');
   }
   $('tPay').addEventListener('click', function () { setMode('pay'); });
+  $('tMomo').addEventListener('click', function () { setMode('momo'); });
   $('tCode').addEventListener('click', function () { setMode('code'); });
 
   function reset() {
@@ -164,14 +203,22 @@ module.exports = (botName) => `<!doctype html>
     $('price').textContent = 'GH₵' + j.price;
     $('per').textContent = 'for ' + (j.days === 30 ? '1 month' : j.days + ' days');
     if (j.tutorial) { $('tut').href = j.tutorial; $('tut').className = 'tut'; }
-    if (j.payments) {
-      $('tabs').className = 'tabs';
-      setMode('pay');
+    if (j.momo) {
+      $('momoNum').textContent = j.momo.number;
+      $('momoWho').textContent = (j.momo.network || 'Mobile Money') + (j.momo.name ? ' · ' + j.momo.name : '');
+      $('momoAmt').textContent = 'GH₵' + j.price;
+    }
+    var n = (j.payments ? 1 : 0) + (j.momo ? 1 : 0);
+    if (n) {
+      $('tabs').className = n === 2 ? 'tabs three' : 'tabs';
+      if (n === 1) $('tabs').className = 'tabs';
+      setMode(j.payments ? 'pay' : 'momo');
     } else {
       $('tabs').className = 'tabs hide';
       setMode('code');
     }
     checkReturn();
+    resumeMomo();
   }).catch(function () { setMode('code'); });
 
   /* coming back from Paystack: ?reference=... */
@@ -198,6 +245,17 @@ module.exports = (botName) => `<!doctype html>
     showError('');
     go.disabled = true;
     var label = go.textContent;
+    if (mode === 'momo') {
+      go.textContent = 'Sending...';
+      post('/api/momo/submit', { number: $('number').value, txn: $('txn').value, name: $('payer').value }).then(function (x) {
+        go.disabled = false; go.textContent = label;
+        if (!x.ok) { showError(x.j.error || 'Something went wrong.'); return; }
+        store('hm_number', $('number').value);
+        store('hm_momo', x.j.key + '|' + x.j.ref);
+        startWait(x.j.key, x.j.ref);
+      }).catch(function () { showError('Could not reach the server. Check your connection.'); go.disabled = false; go.textContent = label; });
+      return;
+    }
     if (mode === 'pay') {
       go.textContent = 'Opening Paystack...';
       post('/api/pay/start', { number: $('number').value, email: $('email').value }).then(function (x) {
@@ -215,6 +273,52 @@ module.exports = (botName) => `<!doctype html>
       form.className = 'hide'; result.className = '';
       poll();
     }).catch(function () { showError('Could not reach the server. Check your connection.'); go.disabled = false; go.textContent = label; });
+  });
+
+  /* Mobile Money: waiting for you to confirm, then the code fills in by itself */
+  function startWait(key, ref) {
+    clearInterval(mtimer);
+    form.className = 'hide'; $('wait').className = '';
+    $('waitRef').textContent = ref || '';
+    $('waitMsg').textContent = 'We sent your Transaction ID. This page fills in your code by itself as soon as the payment is checked, usually within a few minutes. You can keep this page open.';
+    var tick = function () {
+      fetch('/api/momo/status?key=' + encodeURIComponent(key)).then(function (r) { return r.json(); }).then(function (j) {
+        if (j.state === 'approved') {
+          clearInterval(mtimer); store('hm_momo', '');
+          $('wait').className = 'hide'; form.className = '';
+          setMode('code');
+          $('number').value = j.number || $('number').value;
+          $('access').value = j.code; $('accessBox').className = '';
+          var until = j.expiresAt ? new Date(j.expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+          note.className = 'ok-note';
+          note.textContent = 'Payment confirmed! Your one-time access code is ' + j.code + (until ? ' (valid until ' + until + ')' : '') + '. It is filled in below. Save it somewhere safe, then tap the button to get your pairing code.';
+        } else if (j.state === 'rejected') {
+          clearInterval(mtimer); store('hm_momo', '');
+          $('wait').className = 'hide'; form.className = ''; setMode('momo');
+          showError((j.reason || 'We could not confirm this payment.') + ' Check the Transaction ID and send it again.');
+        } else if (j.state === 'none') {
+          clearInterval(mtimer); store('hm_momo', '');
+          $('wait').className = 'hide'; form.className = ''; setMode('momo');
+        }
+      }).catch(function () { /* keep trying */ });
+    };
+    tick();
+    mtimer = setInterval(tick, 5000);
+  }
+  function resumeMomo() {
+    var s = store('hm_momo');
+    if (!s || !info.momo) return;
+    var p = s.split('|');
+    if (p[0]) startWait(p[0], p[1]);
+  }
+  $('waitCancel').addEventListener('click', function () {
+    clearInterval(mtimer); store('hm_momo', '');
+    $('wait').className = 'hide'; form.className = ''; setMode('momo');
+  });
+  $('momoCopy').addEventListener('click', function () {
+    var t = $('momoNum').textContent;
+    var done = function () { $('momoCopy').textContent = 'Copied'; };
+    if (navigator.clipboard) navigator.clipboard.writeText(t).then(done).catch(function () {});
   });
 
   function poll() {
