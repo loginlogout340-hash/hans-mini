@@ -8,6 +8,8 @@
  * Admin commands (admin bot only, hidden from other menus):
  *   .cmute <nick|number> [minutes]  .cunmute <nick|number>  .cban <nick|number>  .cunban <nick|number>
  *   .cpin <text>  .cannounce <text>  .cwho  .cclose  .copen
+ * Everyone who links a number is added automatically (nickname "Member1234", changeable with .community nick).
+ * Leaving with .community leave is remembered, so nobody is added back. COMMUNITY_AUTOJOIN=off switches the automatic join off.
  * Messages arrive in each member's own "Message yourself" chat. Data: DATA_DIR/community.json
  */
 const fs = require('fs');
@@ -52,7 +54,35 @@ function boot(sock) {
   const n = sock.hm?.owner;
   if (!n) return;
   socks.set(n, sock);
-  sock.ev.on('connection.update', ({ connection }) => { if (connection === 'close' && socks.get(n) === sock) socks.delete(n); });
+  sock.ev.on('connection.update', ({ connection }) => {
+    if (connection === 'close' && socks.get(n) === sock) socks.delete(n);
+    if (connection === 'open') setTimeout(() => { try { autoJoin(sock); } catch (e) { console.error('[community] auto join:', e.message); } }, 12000);
+  });
+}
+
+/** every linked number is put in the community once (unless they left on purpose, are banned, or it is closed) */
+function autoJoin(sock) {
+  const n = sock.hm?.owner;
+  if (!n || String(process.env.COMMUNITY_AUTOJOIN || '').toLowerCase() === 'off') return false;
+  if (isAdmin(n)) return false;
+  const m = db.members[n];
+  if (!db.open || m?.joined || m?.banned || m?.optOut) return false;
+  if (memberCount() >= MAX_MEMBERS) return false;
+  let nick = '';
+  for (let i = 0; i < 30 && !nick; i++) {
+    const c = 'Member' + (1000 + Math.floor(Math.random() * 9000));
+    if (!nickTaken(c, n)) nick = c;
+  }
+  if (!nick) return false;
+  db.members[n] = { ...(m || {}), nick, joined: Date.now(), optOut: false, auto: true };
+  save();
+  deliver(`➕ *${nick}* joined the community.`, n);
+  const p = (sock.hm?.db?.prefix) || process.env.PREFIX || '.';
+  sock.sendMessage(n + '@s.whatsapp.net', { text:
+    `🌍 *Welcome to the ${BOT_NAME} community!*\n` +
+    `You were added as *${nick}*. Others only see this nickname, never your number.\n\n` +
+    `Post: ${p}csay Hello everyone!\nChange nickname: ${p}community nick <new name>\nRules: ${p}community rules\nLeave any time: ${p}community leave` }).catch(() => {});
+  return true;
 }
 
 function isAdmin(number) {
@@ -112,7 +142,7 @@ function join(number, nickRaw) {
   if (memberCount() >= MAX_MEMBERS) throw new Error('The community is full for now.');
   const nick = cleanNick(nickRaw);
   if (nickTaken(nick, number)) throw new Error('That nickname is taken. Pick another one.');
-  db.members[number] = { ...(m || {}), nick, joined: Date.now() };
+  db.members[number] = { ...(m || {}), nick, joined: Date.now(), optOut: false };
   save();
   deliver(`➕ *${nick}* joined the community.`, number);
   return nick;
@@ -120,7 +150,7 @@ function join(number, nickRaw) {
 function leave(number) {
   const m = db.members[number];
   if (!m?.joined) throw new Error('You are not in the community.');
-  m.joined = 0; save();
+  m.joined = 0; m.optOut = true; save();
 }
 function rename(number, nickRaw) {
   const m = db.members[number];
@@ -265,4 +295,4 @@ function register(add) {
   add('copen', 'Admin', '', 'Open the community again', (ctx) => { adminOnly(ctx); db.open = true; save(); return '🔓 Community open.'; }, { owner: true });
 }
 
-module.exports = { register, boot, info, join, leave, rename, post, isAdmin, flush };
+module.exports = { autoJoin, register, boot, info, join, leave, rename, post, isAdmin, flush };
