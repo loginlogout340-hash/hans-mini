@@ -10,8 +10,11 @@
  *     (the /admin page has the same Approve and Reject buttons).
  *  4. The visitor's page fills in their one-time access code by itself, and the code is also sent to their WhatsApp.
  *
+ * Automatic approval (optional): an SMS-forwarding app on your phone posts every "payment received" SMS to
+ *   /api/momo/sms?key=MOMO_SMS_KEY . When the Transaction ID and amount match a request, it is approved at once.
+ *
  * Railway variables:  MOMO_NUMBER (shown to the visitor, turns this on)   MOMO_NAME (account name, optional)
- *                     MOMO_NETWORK (for example MTN MoMo, optional)
+ *                     MOMO_NETWORK (for example MTN MoMo, optional)   MOMO_SMS_KEY (secret for the SMS address, optional)
  * Data: DATA_DIR/momo-requests.json
  */
 const fs = require('fs');
@@ -28,8 +31,9 @@ const SITE_WAIT_MS = 7 * 86400000;  // a request nobody answered for a week is c
 const enabled = () => !!(process.env.MOMO_NUMBER || '').trim();
 const details = () => ({ number: (process.env.MOMO_NUMBER || '').trim(), name: (process.env.MOMO_NAME || '').trim(), network: (process.env.MOMO_NETWORK || 'Mobile Money').trim() });
 
-let db = { requests: {} };
+let db = { requests: {}, sms: {} };
 try { db = { ...db, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) }; } catch { /* first run */ }
+for (const [k, x] of Object.entries(db.sms || {})) if (Date.now() - x.at > KEEP_MS) delete db.sms[k];
 for (const [k, r] of Object.entries(db.requests)) if (r.status !== 'pending' && Date.now() - (r.doneAt || r.createdAt) > KEEP_MS) delete db.requests[k];
 
 let timer;
@@ -123,6 +127,50 @@ function reject(ref, reason) {
   return r;
 }
 
+
+/* ---------------- automatic approval from your phone's MoMo SMS ---------------- */
+const smsEnabled = () => (process.env.MOMO_SMS_KEY || '').trim().length >= 8;
+const smsKeyOk = (k) => {
+  const a = Buffer.from(String(k || '')), b = Buffer.from((process.env.MOMO_SMS_KEY || '').trim());
+  return smsEnabled() && a.length === b.length && crypto.timingSafeEqual(a, b);
+};
+
+/** reads one "payment received" SMS. Returns { txn, amount, from } or null (not a received-money SMS) */
+function parseSms(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t || !/received|credited|deposit/i.test(t)) return null;
+  if (/you have (sent|paid)|payment made|cash ?out|withdraw/i.test(t) && !/received/i.test(t)) return null;
+  const tm = t.match(/(?:financial\s+)?trans(?:action)?\.?\s*(?:id|no|number|ref)\s*[:#.\-]?\s*([A-Z0-9.]{6,32})/i)
+    || t.match(/\bref(?:erence)?\s*[:#.\-]?\s*([A-Z0-9.]{8,32})/i);
+  if (!tm) return null;
+  const am = t.match(/(?:GHS|GH₵|GHC|₵)\s*([\d,]+(?:\.\d{1,2})?)/i) || t.match(/([\d,]+(?:\.\d{1,2})?)\s*(?:GHS|GH₵|GHC)\b/i);
+  const amount = am ? parseFloat(am[1].replace(/,/g, '')) : NaN;
+  const fm = t.match(/\bfrom\s+(.{2,40}?)(?:\.|,|\s+Current|\s+Available|\s+Financial|\s+Trans|\s+Ref|$)/i);
+  return { txn: cleanTxn(tm[1]).replace(/^\.+|\.+$/g, ''), amount, from: fm ? fm[1].trim() : '' };
+}
+
+/** approve a waiting request if this phone SMS proves it. Returns the approve() result or null */
+function tryAuto(r) {
+  if (!r || r.status !== 'pending') return null;
+  const s = db.sms[r.txn];
+  if (!s || s.used) return null;
+  if (!(s.amount >= r.amount - 0.001)) return null;         // too little (or unreadable amount): you decide by hand
+  const out = approve(r.ref);
+  s.used = r.ref; r.auto = true; save();
+  return out;
+}
+
+/** one SMS arrived from your phone. Returns { parsed, approved: [approve() results] } */
+function ingestSms(text) {
+  const p = parseSms(text);
+  if (!p) return { parsed: null, approved: [] };
+  if (!db.sms[p.txn]) db.sms[p.txn] = { txn: p.txn, amount: p.amount, from: p.from, at: Date.now(), used: null };
+  save();
+  const approved = [];
+  for (const r of pending()) if (r.txn === p.txn) { const o = tryAuto(r); if (o) approved.push(o); }
+  return { parsed: p, approved };
+}
+
 /* ---------------- WhatsApp messages ---------------- */
 const money = (r) => `GH₵${r.amount}`;
 const adminText = (r, prefix = '.') => [
@@ -146,4 +194,4 @@ const userText = (code, expiresAt, site) => [
   'Keep it private: it only works for this number.',
 ].filter(Boolean).join('\n');
 
-module.exports = { enabled, details, submit, status, approve, reject, pending, recent, find, adminText, userText, MomoError };
+module.exports = { smsEnabled, smsKeyOk, parseSms, tryAuto, ingestSms, enabled, details, submit, status, approve, reject, pending, recent, find, adminText, userText, MomoError };
