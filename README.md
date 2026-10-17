@@ -10,7 +10,7 @@ A multi-user WhatsApp bot with **170+ commands**, built on Baileys. Visitors ope
 - **Access control**: your own `ACCESS_CODE` (never expires), manual codes made on `/admin`, or paid codes through Paystack (mobile money and cards) that expire after the plan.
 - **Hanson, the built-in AI assistant**: start a message with his name and say what you want. He runs the right command for you or answers questions. Turn him on and off with `.hanson on` / `.hanson off`.
 - **Hans Pulse**: per-user stats and a private web dashboard (`.pulse`, `.pulse link`).
-- **Community**: opt-in chat between users under nicknames (`.community join`).
+- **Community**: chat between users under nicknames. Everyone who links a number is added automatically as `Member1234` (change it with `.community nick`, leave with `.community leave`; leavers are not added back). Set `COMMUNITY_AUTOJOIN=off` to make it opt-in again.
 - **Admin tools** (only on the admin bot): `.users`, `.removeuser`, `.banuser`, `.broadcast`, `.msguser` and more.
 
 ## Files
@@ -76,6 +76,7 @@ Paystack webhook address: `https://YOUR-DOMAIN/api/pay/webhook`
 | `MENU_BUTTONS`, `WELCOME` | Set to `off` to switch off the button menu or the welcome message |
 | `LIKE_EMOJI` | Default status reaction (or `random`) |
 | `COMMUNITY_MAX` | Community size limit (default 300) |
+| `COMMUNITY_AUTOJOIN` | Set to `off` to stop adding new users to the community automatically |
 | `OWNER_GITHUB` | Your GitHub link, shown by `.ownerinfo` |
 | `DEBUG_EXTRA` | Set to `1` to see more logs |
 
