@@ -200,6 +200,7 @@ const server = http.createServer(async (req, res) => {
         const code = await manager.pair(number);
         lastPair.set(number, Date.now());
         if (paid) codes.markMember(number);
+        else if (RESTRICTED && ownerOk(access)) codes.unmember(number); // linked with YOUR code: never removed when an old paid plan ends
         return send(res, 200, { code: (code.match(/.{1,4}/g) || [code]).join('-'), number });
       } finally {
         inFlight.delete(number);
