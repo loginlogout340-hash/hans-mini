@@ -3,6 +3,7 @@
  * Hans-Mini more5.js
  *   .shazam            reply to a song / voice note / video -> tells you the song name and artist
  *   .profilepic        get someone's profile picture (reply to them, @mention, or give a number)
+ *   .onetick on|off    one grey tick only: the bot stops confirming that private messages arrived
  *   .blackvideo        reply to audio / voice note / song -> sends it back as a video with a black screen
  *   .lyrics <song>     look up the lyrics of a song (or reply to a message with the song name)
  *   .stealth on|off    ghost mode: hides your last seen, online status and read receipts
@@ -52,6 +53,23 @@ async function identify(buf) {
     throw new Error(msg.slice(0, 150));
   }
   return j.result || null;
+}
+
+/* ---------------- .onetick ----------------
+ * WhatsApp shows the second tick when a device confirms delivery. A linked bot normally confirms every message.
+ * With .onetick ON the bot ignores private chats at the connection level: it never confirms them, so the bot
+ * itself will not add the second tick. (Your own phone still confirms when it is online. See the .onetick text.)
+ * Kept: your own "Message yourself" chat, groups, statuses. bot.js asks this function for every incoming chat.
+ */
+function oneTickIgnore(sock, jid) {
+  try {
+    if (!sock || !sock.hm || !sock.hm.db || !sock.hm.db.oneTick || !jid) return false;
+    const j = String(jid);
+    if (j.endsWith('@g.us') || j.endsWith('@newsletter') || j.includes('broadcast')) return false;
+    const d = (x) => String(x || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+    const mine = [sock.user && sock.user.id, sock.user && sock.user.lid, sock.hm.owner].filter(Boolean).map(d);
+    return !mine.includes(d(j)); // keep your own chat so your commands still work
+  } catch (e) { return false; }
 }
 
 /* ---------------- .blackvideo ---------------- */
@@ -175,6 +193,19 @@ function register(add) {
     await ctx.sock.sendMessage(ctx.jid, { image, caption: `🖼️ Profile picture of ${label}`, mentions }, { quoted: ctx.msg });
   }, { aliases: ['getdp', 'dp', 'pfp', 'avatar'] });
 
+  add('onetick', 'Owner', 'on | off', 'Show only one tick to people who message you (the bot stops confirming delivery)', (ctx) => {
+    const { db, save } = hmOf(ctx.sock);
+    const v = (ctx.args[0] || '').toLowerCase();
+    const p = ctx.prefix;
+    if (v === 'on' || v === 'off') {
+      db.oneTick = v === 'on'; save();
+      return db.oneTick
+        ? `✅ *One tick is ON*\nThe bot no longer confirms private messages, so it will not add the second tick.\n\n⚠️ While it is ON:\n› the bot does not see private chats (afk, chatbot, Hanson, antidelete and commands from other people do not work there)\n› your own chat ("Message yourself") and groups work as normal\n› if your phone is online, your phone still sends the second tick. For one tick only, turn off the phone's data and Wi-Fi.\n\nTurn it off with ${p}onetick off. It applies to new messages.`
+        : '✅ *One tick is OFF.* The bot confirms messages again (normal ticks).';
+    }
+    return `✔️ One tick is *${db.oneTick ? 'ON' : 'OFF'}*\n\nUsage: ${p}onetick on  |  ${p}onetick off`;
+  }, { owner: true, aliases: ['singletick', 'noticks'] });
+
   add('blackvideo', 'Media', '(reply to an audio or voice note)', 'Turn an audio into a video with a black screen', async (ctx) => {
     let buf;
     try { buf = await ctx.downloadMedia(); }
@@ -219,4 +250,4 @@ function register(add) {
   }, { owner: true, aliases: ['ghost', 'ghostmode'] });
 }
 
-module.exports = { register };
+module.exports = { oneTickIgnore, register };
