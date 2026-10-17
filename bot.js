@@ -33,6 +33,8 @@ const STATUS_EMOJIS = ['❤️', '🔥', '😂', '😍', '👏', '🥰', '💯',
 const SAVED_KEYS = ['autoStatus', 'autoLikeStatus', 'likeEmoji', 'mode', 'antiViewOnce', 'antiDelete', 'welcomed', 'prefix', 'multiPrefix'];
 const MULTI_PREFIXES = ['.', '!', '#', '/', '$', '~', ','];
 const STORE_MAX = 600; // recent messages kept per user (for antidelete)
+const GROUP_CACHE_MAX = 60; // groups remembered per user
+const MAX_RUNNING = 8; // commands one user's bot runs at the same time; a flood beyond this is dropped
 
 const norm = (j) => String(j || '').replace(/:\d+@/, '@');
 const digits = (j) => String(j || '').split('@')[0].split(':')[0].replace(/\D/g, '');
@@ -82,7 +84,9 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   config.save = () => {
     try {
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(settingsFile, JSON.stringify(Object.fromEntries(SAVED_KEYS.map((k) => [k, config[k]]))));
+      // written to a temporary file first, so a crash in the middle never leaves a broken settings file
+      fs.writeFileSync(settingsFile + '.tmp', JSON.stringify(Object.fromEntries(SAVED_KEYS.map((k) => [k, config[k]]))));
+      fs.renameSync(settingsFile + '.tmp', settingsFile);
     } catch (e) { console.error(`[${number}] could not save settings:`, e.message); }
   };
   const likeEmojiNow = () => (!config.likeEmoji || String(config.likeEmoji).toLowerCase() === 'random'
@@ -101,12 +105,14 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   let download = null;
   const store = new Map();
   const groupCache = new Map();
+  let running = 0; // commands running right now
 
   async function getGroup(sock, jid) {
     const hit = groupCache.get(jid);
     if (hit && Date.now() - hit.t < 60000) return hit.data;
     const data = await sock.groupMetadata(jid);
     groupCache.set(jid, { t: Date.now(), data });
+    if (groupCache.size > GROUP_CACHE_MAX) groupCache.delete(groupCache.keys().next().value); // never grows without limit
     return data;
   }
 
@@ -190,6 +196,8 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       },
     };
 
+    if (running >= MAX_RUNNING) { if (!isGroup) ctx.reply('⏳ Too many commands at once. Please wait a moment.').catch(() => {}); return; }
+    running++;
     try {
       if (cmd.owner && !isOwner) return void (await ctx.reply('⛔ This command is for the bot owner only.'));
       if (cmd.group && !isGroup) return void (await ctx.reply('👥 This command only works in groups.'));
@@ -207,7 +215,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     } catch (err) {
       console.error(`[${number}] [${cmd.name}]`, err);
       await ctx.reply('⚠️ ' + (err && err.message ? err.message : 'Something went wrong.')).catch(() => {});
-    }
+    } finally { running--; }
   }
 
   // --- recent message store (for antidelete) ---
@@ -318,13 +326,16 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
 
     sock.ev.on('messages.upsert', ({ messages, type }) => {
       for (const msg of messages) {
-        // statuses can arrive as "notify" or "append", so they are handled before the type check
-        if (msg.key.remoteJid === 'status@broadcast' || msg.key.remoteJidAlt === 'status@broadcast') { handleStatus(sock, msg); continue; }
-        remember(msg); // also the bot's own sent messages (type "append"), so they can be re-sent on request
-        if (type !== 'notify') continue;
-        watchers(sock, msg);
-        extra.passive(sock, msg);
-        handle(sock, ui.fromListReply(withStickerCmd(sock, msg))).catch((e) => console.error(`[${number}] handler error:`, e));
+        // one bad message must not stop the rest of the batch (or the bot)
+        try {
+          // statuses can arrive as "notify" or "append", so they are handled before the type check
+          if (msg.key.remoteJid === 'status@broadcast' || msg.key.remoteJidAlt === 'status@broadcast') { handleStatus(sock, msg).catch((e) => console.error(`[${number}] status error:`, e.message)); continue; }
+          remember(msg); // also the bot's own sent messages (type "append"), so they can be re-sent on request
+          if (type !== 'notify') continue;
+          watchers(sock, msg).catch((e) => console.error(`[${number}] watcher error:`, e.message));
+          Promise.resolve(extra.passive(sock, msg)).catch((e) => console.error(`[${number}] passive error:`, e.message));
+          handle(sock, ui.fromListReply(withStickerCmd(sock, msg))).catch((e) => console.error(`[${number}] handler error:`, e));
+        } catch (e) { console.error(`[${number}] message error:`, e.message); }
       }
     });
   }
@@ -344,7 +355,8 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     const s = current;
     current = null;
     if (!s) return;
-    try { clearInterval(s.hm?.timer); } catch { /* ignore */ }
+    // every timer this socket started (always-online, schedules, reminders, auto bio ...)
+    try { for (const [k, v] of Object.entries(s.hm || {})) if (/timer$/i.test(k)) clearInterval(v); } catch { /* ignore */ }
     try { s.ev.removeAllListeners('connection.update'); s.ev.removeAllListeners('messages.upsert'); } catch { /* ignore */ }
     try { s.end(undefined); } catch { /* ignore */ }
   }
