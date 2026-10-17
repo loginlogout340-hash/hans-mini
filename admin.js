@@ -8,6 +8,9 @@
  *   .unbanuser <number>    allow them again
  *   .banned                list banned numbers
  *   .watch on|off          get an alert in your chat every time a user runs a command
+ *   .requests              Mobile Money payment requests waiting for you
+ *   .approve <ref> [days]  you checked the payment: send the person their one-time access code
+ *   .reject <ref> [reason] payment not found: tell the person to check the Transaction ID
  */
 const ago = (t) => {
   if (!t) return 'never';
@@ -62,6 +65,42 @@ function register(add) {
     const b = guard(ctx).banned();
     return b.length ? '🚫 *Banned*\n' + b.map((n) => '+' + n).join('\n') : 'No banned numbers.';
   }, { owner: true });
+
+  /* ----- Mobile Money payments (see momo.js) ----- */
+  const site = () => (process.env.PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN : '')).replace(/\/+$/, '');
+
+  add('requests', 'Admin', '', 'Mobile Money payment requests waiting for you', (ctx) => {
+    guard(ctx);
+    const momo = require('./momo');
+    const list = momo.pending();
+    if (!list.length) return '✅ No payment requests waiting.';
+    return `💰 *Waiting for you* (${list.length})\n` + list.map((r) => `\n*${r.ref}*  +${r.number}${r.name ? ' (' + r.name + ')' : ''}\nTransaction ID: ${r.txn}  ·  GH₵${r.amount}  ·  ${ago(r.createdAt)}`).join('\n') +
+      `\n\n${ctx.prefix}approve <ref>   or   ${ctx.prefix}reject <ref> <reason>`;
+  }, { owner: true, aliases: ['payments', 'pending'] });
+
+  add('approve', 'Admin', '<ref> [days]', 'You checked the payment: send the person their one-time access code', async (ctx) => {
+    const m = guard(ctx);
+    const momo = require('./momo');
+    const ref = (ctx.args[0] || '').toUpperCase();
+    if (!ref) throw new Error(`Give the reference.\nExample: ${ctx.prefix}approve K7F2P\nSee the list with ${ctx.prefix}requests`);
+    const days = parseInt(ctx.args[1], 10) || undefined;
+    let r;
+    try { r = momo.approve(ref, days); } catch (e) { throw new Error(e.message); }
+    if (r.again) return `ℹ️ ${ref} was already approved. Code: ${r.code}`;
+    const sent = await m.sendFromAdmin(r.request.number, momo.userText(r.code, r.expiresAt, site()));
+    return `✅ Approved ${ref} for +${r.request.number}\nCode: *${r.code}*\n${sent ? 'The code was sent to their WhatsApp and appears on their page.' : 'It appears on their page. I could not message them, so send it to them yourself if they do not see it.'}`;
+  }, { owner: true, aliases: ['confirmpay', 'accept'] });
+
+  add('reject', 'Admin', '<ref> [reason]', 'Payment not found: tell the person to check the Transaction ID', async (ctx) => {
+    const m = guard(ctx);
+    const momo = require('./momo');
+    const ref = (ctx.args[0] || '').toUpperCase();
+    if (!ref) throw new Error(`Give the reference.\nExample: ${ctx.prefix}reject K7F2P wrong transaction id`);
+    let r;
+    try { r = momo.reject(ref, ctx.args.slice(1).join(' ')); } catch (e) { throw new Error(e.message); }
+    const sent = await m.sendFromAdmin(r.number, `❌ We could not confirm your payment (ref ${r.ref}).\n${r.reason}\nCheck the Transaction ID in your MoMo message and send it again on the website.`);
+    return `✅ Rejected ${ref}. ${sent ? 'They were told on WhatsApp.' : 'They will see it on the page.'}`;
+  }, { owner: true, aliases: ['decline'] });
 
   add('watch', 'Admin', 'on|off', 'Get an alert every time a user runs a command', (ctx) => {
     const m = guard(ctx);
