@@ -1,4 +1,4 @@
-# Hans-Mini
+# Hans-Mini  (v2.1.0)
 by 𝙷𝚊𝚗𝚜𝚘𝚗 ✪
 
 A multi-user WhatsApp bot with **170+ commands**, built on Baileys. Visitors open the pairing website, type their number, get a code, link WhatsApp, and the bot is theirs. No setup, no coding, no Railway account needed on their side.
@@ -23,6 +23,7 @@ A multi-user WhatsApp bot with **170+ commands**, built on Baileys. Visitors ope
 | `momo.js` | Manual Mobile Money payments: Transaction ID requests that you approve on WhatsApp |
 | `manager.js` | Keeps one bot per user, user limit, bans |
 | `bot.js` | One user's WhatsApp connection and command handling |
+| `limit.js` | Keeps heavy jobs (ffmpeg, yt-dlp) from running all at once |
 | `commands.js`, `extra.js`, `ui.js`, `dl.js`, `media.js`, `status.js` | Core commands, menu design, downloaders, media tools, status handling |
 | `more.js` ... `more6.js`, `hanson.js`, `admin.js` | More commands: owner tools, AI, guards, media, Hanson, admin |
 | `pulse.js`, `pulsepage.js`, `community.js` | Hans Pulse dashboard and the community |
@@ -37,7 +38,7 @@ A multi-user WhatsApp bot with **170+ commands**, built on Baileys. Visitors ope
 | `ACCESS_CODE` | Your own code(s), comma separated. Never expire, work for any number |
 | `ADMIN_NUMBER` | Your number with country code, digits only. Turns on the admin tools |
 | `OWNER_NAME` | Your name, shown instead of a number |
-| `MAX_USERS` | How many numbers can be linked (default 10) |
+| `MAX_USERS` | How many people can link a number (default 25). Your own admin bot does not count |
 | `DATA_DIR` | Folder on the Volume where everything is saved (example `/data`). Add a Volume at that path, or users are logged out on every deploy |
 | `PREFIX` | Command prefix (default `.`) |
 | `BOT_NAME` | Name shown in the menu (default `Hans-Mini`) |
@@ -78,6 +79,7 @@ Paystack webhook address: `https://YOUR-DOMAIN/api/pay/webhook`
 | `COMMUNITY_MAX` | Community size limit (default 300) |
 | `COMMUNITY_AUTOJOIN` | Set to `off` to stop adding new users to the community automatically |
 | `OWNER_GITHUB` | Your GitHub link, shown by `.ownerinfo` |
+| `HEAVY_JOBS`, `HEAVY_QUEUE` | How many ffmpeg / YouTube jobs run at the same time (default 3) and how many may wait (default 30). Protects the server's memory when many users download at once |
 | `DEBUG_EXTRA` | Set to `1` to see more logs |
 
 ## Deploy on Railway
