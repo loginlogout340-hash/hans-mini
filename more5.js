@@ -18,7 +18,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
+const heavy = require('./limit').run; // limits how many ffmpeg jobs run at once
 
 const hmOf = (sock) => sock.hm;
 
@@ -28,7 +28,7 @@ function clip(buf) {
   const base = path.join(os.tmpdir(), 'hm-sz-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
   return new Promise((ok) => {
     try { fs.writeFileSync(base + '.in', buf); } catch { return ok(buf); }
-    execFile('ffmpeg', ['-y', '-i', base + '.in', '-vn', '-t', '25', '-ac', '1', '-ar', '44100', '-b:a', '96k', base + '.mp3'],
+    heavy('ffmpeg', ['-y', '-i', base + '.in', '-vn', '-t', '25', '-ac', '1', '-ar', '44100', '-b:a', '96k', base + '.mp3'],
       { timeout: 60000 }, (err) => {
         let out = buf;
         if (!err) { try { out = fs.readFileSync(base + '.mp3'); } catch { /* keep original */ } }
@@ -83,7 +83,7 @@ function blackVideo(buf) {
       '-map', '0:v', '-map', '1:a:0', '-t', String(MAX_AUDIO_SECONDS), '-shortest',
       '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', base + '.mp4'];
-    execFile('ffmpeg', args, { timeout: 180000 }, (err, out, errout) => {
+    heavy('ffmpeg', args, { timeout: 180000 }, (err, out, errout) => {
       let res = null;
       if (!err) { try { res = fs.readFileSync(base + '.mp4'); } catch { /* handled below */ } }
       for (const e of ['in', 'mp4']) fs.unlink(base + '.' + e, () => {});
