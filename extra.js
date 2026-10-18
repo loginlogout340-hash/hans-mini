@@ -65,7 +65,13 @@ async function apiGetKey(key, route, params, timeoutMs) {
     const url = new URL(apiBase() + p);
     url.searchParams.set('apikey', key);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    let r;
+    try { r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) }); }
+    catch (e) {
+      const why = e.cause?.code || e.cause?.message || e.name || 'network error';
+      const hint = /ENOTFOUND|EAI_AGAIN/.test(why) ? 'that address does not exist, check MALVIN_API' : /ECONNREFUSED/.test(why) ? 'the service refused the connection' : /Timeout|ETIMEDOUT/.test(why) ? 'the service did not answer in time' : 'could not reach the service';
+      throw new Error('cannot reach ' + url.host + ' (' + why + '): ' + hint);
+    }
     let j = null;
     try { j = await r.json(); } catch { /* not JSON */ }
     if (!r.ok || j?.status === false) {
