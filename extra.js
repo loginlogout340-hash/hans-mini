@@ -28,7 +28,12 @@ const yts = require('yt-search');
 const MAX_MB = 40;
 
 /* ---------- download API (optional: MALVIN_API + MALVIN_KEY) ---------- */
-const apiBase = () => (process.env.MALVIN_API || '').trim().replace(/\/+$/, '');
+// forgiving: a missing https://, quotes or spaces around the value no longer cause "Invalid URL"
+const apiBase = () => {
+  let v = String(process.env.MALVIN_API || '').trim().replace(/^["']+|["']+$/g, '').trim().replace(/\/+$/, '');
+  if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v;
+  return v;
+};
 // every key you added: MALVIN_KEY, MALVIN_KEY_2 ... MALVIN_KEY_9, MALVIN_KEYS (several keys can be comma separated)
 const apiKeyList = () => {
   const raw = [process.env.MALVIN_KEY, process.env.MALVIN_KEYS];
