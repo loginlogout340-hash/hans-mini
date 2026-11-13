@@ -17,6 +17,8 @@ const ui = require('./ui');
 const statusMod = require('./status'); // NEW: auto view / auto like status logic
 const moreFive = require('./more5');
 const hanson = require('./hanson'); // Hanson, the built-in AI assistant (turned on with .hanson on)
+const more7 = require('./more7'); // NEW: emojimix, meme, textall (contact book), updates
+const UPDATES = require('./updates'); // NEW: the "what's new" notes shown to users
 
 // name/alias -> command (shared by every user, built once)
 const registry = new Map();
@@ -30,7 +32,11 @@ ui.install(registry, commands); // styled menu with the default picture
 
 // .autolikestatus emoji random  ->  a different emoji from this list for every status
 const STATUS_EMOJIS = ['❤️', '🔥', '😂', '😍', '👏', '🥰', '💯', '😭', '🤣', '🙏', '👌', '💪', '🤩', '😎', '🥳', '✨', '💀', '🤯', '😤', '💅', '👀', '🎉', '😈', '🤫', '🫶'];
-const SAVED_KEYS = ['autoStatus', 'autoLikeStatus', 'likeEmoji', 'mode', 'antiViewOnce', 'antiDelete', 'welcomed', 'prefix', 'multiPrefix'];
+const SAVED_KEYS = ['autoStatus', 'autoLikeStatus', 'likeEmoji', 'mode', 'antiViewOnce', 'antiDelete', 'welcomed', 'prefix', 'multiPrefix', 'defaultsApplied', 'seenUpdate'];
+// NEW: switched on automatically the first time a NEW person links their number
+// (people who were already linked before this update keep their own settings).
+// Always online is switched on too (see connect()).
+const NEW_USER_DEFAULTS = { autoStatus: true, autoLikeStatus: true, likeEmoji: 'random', antiDelete: true, mode: 'private' };
 const MULTI_PREFIXES = ['.', '!', '#', '/', '$', '~', ','];
 const STORE_MAX = 600; // recent messages kept per user (for antidelete)
 const GROUP_CACHE_MAX = 60; // groups remembered per user
@@ -113,6 +119,29 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   const groupCache = new Map();
   const vvCache = new Map(); // NEW: message id -> saved view-once media
   let running = 0; // commands running right now
+  let starterNote = false; // NEW: a new user still has to be told which settings were switched on
+  let onlineByDefault = false; // NEW: switch "always online" on for a new user
+  let announcing = false;
+
+  // NEW: tells the user about the starter settings (new people) and about updates (people who were already linked)
+  async function announce(sock, returning) {
+    if (announcing) return;
+    announcing = true;
+    try {
+      await sleep(6000); // after the welcome banner
+      const to = ownerJid();
+      const p = config.prefix;
+      if (starterNote) {
+        starterNote = false;
+        await sock.sendMessage(to, {
+          text: `⚙️ *Starter settings*\nI switched these ON for you:\n✅ Auto view status (${p}autostatus)\n✅ Auto like status with random emojis (${p}autolikestatus)\n✅ Always online (${p}alwaysonline)\n✅ Anti delete (${p}antidelete)\n🔒 Private mode: only you can use the bot. Let other people in with ${p}mode public\n\nTurn any of them off with its command, for example ${p}antidelete off\n\nType ${p}updates to see what is new.`,
+        });
+      }
+      if (returning && config.seenUpdate !== UPDATES.version) await sock.sendMessage(to, { text: UPDATES.text(p) });
+      if (config.seenUpdate !== UPDATES.version) { config.seenUpdate = UPDATES.version; config.save(); }
+    } catch (e) { console.error(`[${number}] update notice error:`, e.message); }
+    finally { announcing = false; }
+  }
 
   async function getGroup(sock, jid) {
     const hit = groupCache.get(jid);
@@ -317,6 +346,18 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     const { B, makeWASocket, version } = await loadBaileys();
     const logger = pino({ level: 'silent' });
 
+    // NEW: starter settings for a brand-new user. Someone who already has a saved login keeps what they have.
+    if (!config.defaultsApplied) {
+      const returning = fs.existsSync(path.join(config.sessionDir, 'creds.json'));
+      config.defaultsApplied = true;
+      if (!returning) {
+        Object.assign(config, NEW_USER_DEFAULTS);
+        onlineByDefault = true;
+        starterNote = true;
+      }
+      config.save();
+    }
+
     fs.mkdirSync(config.sessionDir, { recursive: true });
     const { state, saveCreds } = await B.useMultiFileAuthState(config.sessionDir);
     if (stopped) return;
@@ -337,6 +378,12 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
 
     sock.ev.on('creds.update', saveCreds);
     extra.boot(sock, dir);
+    more7.boot(sock); // NEW: collects contacts for .textall
+    if (onlineByDefault) { // NEW: always online is ON for a new user (the ping starts when the connection opens)
+      onlineByDefault = false;
+      sock.hm.db.alwaysOnline = true;
+      sock.hm.save();
+    }
     download = (m) => B.downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
     forward = makeForwarder(download);
 
@@ -350,7 +397,10 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
         config.ownerName = (process.env.OWNER_NAME || sock.user?.name || '').trim();
         log('connected as', sock.user?.id);
         emit('connected', { name: config.ownerName });
+        // NEW: someone who has seen the welcome banner before (or has it switched off) is an existing user
+        const returning = config.welcomed || /^(off|false|0)$/i.test(process.env.WELCOME || '');
         ui.welcome(sock, config, commands.length).catch((e) => console.error(`[${number}] welcome error:`, e.message));
+        announce(sock, returning); // NEW: starter settings (new users) or "what's new" (existing users)
       }
       if (connection === 'close') {
         open = false;
@@ -383,6 +433,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
           }
           if (type !== 'notify') continue;
           watchers(sock, msg).catch((e) => console.error(`[${number}] watcher error:`, e.message));
+          more7.passive(sock, msg); // NEW: remembers people you chat with (for .textall)
           Promise.resolve(extra.passive(sock, msg)).catch((e) => console.error(`[${number}] passive error:`, e.message));
           handle(sock, ui.fromListReply(withStickerCmd(sock, msg))).catch((e) => console.error(`[${number}] handler error:`, e));
         } catch (e) { console.error(`[${number}] message error:`, e.message); }
