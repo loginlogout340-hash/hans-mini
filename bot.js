@@ -36,6 +36,12 @@ const STORE_MAX = 600; // recent messages kept per user (for antidelete)
 const GROUP_CACHE_MAX = 60; // groups remembered per user
 const MAX_RUNNING = 8; // commands one user's bot runs at the same time; a flood beyond this is dropped
 
+// NEW: view-once pictures, videos and voice notes are saved the moment they arrive, because WhatsApp
+// removes them from its servers once they are opened (a later download fails with "No valid media URL").
+const VV_MAX = 10; // view-once items kept per user (the oldest is dropped first)
+const VV_MAX_BYTES = 15 * 1024 * 1024; // anything bigger than 15 MB is not kept (protects the server memory)
+const VV_MAX_AGE = 3 * 60 * 60 * 1000; // kept for 3 hours
+
 const norm = (j) => String(j || '').replace(/:\d+@/, '@');
 const digits = (j) => String(j || '').split('@')[0].split(':')[0].replace(/\D/g, '');
 const idsOf = (p) => [p.id, p.lid, p.jid, p.phoneNumber].filter(Boolean).map(norm);
@@ -105,6 +111,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   let download = null;
   const store = new Map();
   const groupCache = new Map();
+  const vvCache = new Map(); // NEW: message id -> saved view-once media
   let running = 0; // commands running right now
 
   async function getGroup(sock, jid) {
@@ -114,6 +121,32 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     groupCache.set(jid, { t: Date.now(), data });
     if (groupCache.size > GROUP_CACHE_MAX) groupCache.delete(groupCache.keys().next().value); // never grows without limit
     return data;
+  }
+
+  // NEW: save a view-once message right when it arrives (before it is opened and removed by WhatsApp)
+  async function saveViewOnce(msg) {
+    try {
+      if (!download || !msg.key?.id || vvCache.has(msg.key.id)) return;
+      const c = unwrap(msg.message);
+      const kind = c.imageMessage ? 'image' : c.videoMessage ? 'video' : c.audioMessage ? 'audio' : null;
+      if (!kind) return;
+      const part = c[kind + 'Message'];
+      const buffer = await download(msg);
+      if (!buffer || buffer.length > VV_MAX_BYTES) return;
+      const now = Date.now();
+      for (const [id, v] of vvCache) if (now - v.t > VV_MAX_AGE) vvCache.delete(id); // forget old ones
+      vvCache.set(msg.key.id, { t: now, buffer, kind, caption: part.caption || '', mimetype: part.mimetype, ptt: !!part.ptt });
+      while (vvCache.size > VV_MAX) vvCache.delete(vvCache.keys().next().value);
+    } catch (e) { log('could not save view-once:', e.message); }
+  }
+
+  // NEW: send a saved view-once item to a chat
+  async function sendSaved(sock, to, hit, header = '') {
+    const cap = [header, hit.caption].filter(Boolean).join('\n\n');
+    if (hit.kind === 'image') return sock.sendMessage(to, { image: hit.buffer, caption: cap });
+    if (hit.kind === 'video') return sock.sendMessage(to, { video: hit.buffer, caption: cap });
+    if (header) await sock.sendMessage(to, { text: header });
+    return sock.sendMessage(to, { audio: hit.buffer, mimetype: hit.mimetype || 'audio/ogg; codecs=opus', ptt: !!hit.ptt });
   }
 
   // a sticker bound with .stickcmd runs its command (owner only); the sticker's reply context is kept
@@ -142,7 +175,8 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     const usedPrefix = prefixes.find((p) => body.startsWith(p));
     if (!usedPrefix) return;
 
-    const m = body.slice(usedPrefix.length).match(/^(\S+)\s*([\s\S]*)$/);
+    // CHANGED: spaces between the prefix and the command are allowed, so ". play song" works like ".play song"
+    const m = body.slice(usedPrefix.length).match(/^\s*(\S+)\s*([\s\S]*)$/);
     if (!m) return;
     const cmd = registry.get(m[1].toLowerCase());
     if (!cmd) return;
@@ -186,13 +220,24 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
         if (!download) throw new Error('The bot is not ready yet. Try again.');
         if (message.imageMessage) return download(msg);
         if (!ctxInfo.quotedMessage) throw new Error('Reply to a picture, or send a picture with this command as its caption.');
+        // NEW: a view-once picture was saved when it arrived, so use that copy
+        const saved = vvCache.get(ctxInfo.stanzaId);
+        if (saved) return saved.buffer;
         return download({ key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage });
       },
       forwardQuoted: async (to, header) => {
         if (!ctxInfo.quotedMessage) throw new Error('Reply to the message you want to retrieve.');
         try {
+          // NEW: a view-once message was saved when it arrived, so send that copy
+          const saved = vvCache.get(ctxInfo.stanzaId);
+          if (saved) return await sendSaved(sock, to, saved, header);
           return await forward(sock, to, { key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage }, header);
-        } catch (e) { throw new Error('Could not retrieve that media (it may have expired): ' + e.message); }
+        } catch (e) {
+          if (isViewOnce(ctxInfo.quotedMessage)) {
+            throw new Error('That view-once message was not saved. The bot must be online when it is sent. Ask for a new one and reply to it again.');
+          }
+          throw new Error('Could not retrieve that media (it may have expired): ' + e.message);
+        }
       },
     };
 
@@ -331,6 +376,11 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
           // statuses can arrive as "notify" or "append", so they are handled before the type check
           if (msg.key.remoteJid === 'status@broadcast' || msg.key.remoteJidAlt === 'status@broadcast') { handleStatus(sock, msg).catch((e) => console.error(`[${number}] status error:`, e.message)); continue; }
           remember(msg); // also the bot's own sent messages (type "append"), so they can be re-sent on request
+          // NEW: keep a copy of every fresh view-once message (so retrieve still works after it is opened)
+          if (msg.message && isViewOnce(msg.message)) {
+            const ts = Number(String(msg.messageTimestamp || 0));
+            if (!ts || Date.now() / 1000 - ts < 600) saveViewOnce(msg);
+          }
           if (type !== 'notify') continue;
           watchers(sock, msg).catch((e) => console.error(`[${number}] watcher error:`, e.message));
           Promise.resolve(extra.passive(sock, msg)).catch((e) => console.error(`[${number}] passive error:`, e.message));
@@ -354,6 +404,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     open = false;
     const s = current;
     current = null;
+    vvCache.clear(); // NEW: free the saved view-once media
     if (!s) return;
     // every timer this socket started (always-online, schedules, reminders, auto bio ...)
     try { for (const [k, v] of Object.entries(s.hm || {})) if (/timer$/i.test(k)) clearInterval(v); } catch { /* ignore */ }
