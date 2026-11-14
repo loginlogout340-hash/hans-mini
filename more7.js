@@ -2,8 +2,9 @@
 /**
  * Hans-Mini v2.2 extra commands:  emojimix, meme, updates, textall
  *
- *   more.js   calls register(add)          (one line, inside register)
+ *   bot.js    calls late(registry, commands) once at start: it adds the new commands by itself (no edit of more.js needed)
  *   bot.js    calls boot(sock) and passive(sock, msg)   (builds the contact book that .textall uses)
+ *   more.js   may still call register(add) (optional; it does the same job and late() then skips what is already there)
  *
  * The contact book is saved in the user's own extra.json (sock.hm.db.contacts), so nothing is shared between users.
  * emojimix needs the npm package "emoji-mixer" (add it to package.json).
@@ -206,11 +207,29 @@ async function textall(ctx) {
 
 /* =============================== register =============================== */
 function register(add) {
-  require('./music').register(add); // .play / .song that work without any variable (registered first, so they replace the old ones)
+  // .play / .song that work without any variable (registered first, so they replace the old ones)
+  try { require('./music').register(add); } catch (e) { console.error('[more7] music.js is missing or broken:', e.message); }
   add('emojimix', 'Fun', '<emoji> <emoji>', 'Mix two emojis into one sticker, e.g. emojimix 😀😍', emojimix, { aliases: ['emix', 'mixemoji'] });
   add('meme', 'Fun', '[subreddit]', 'Get a random meme, e.g. meme or meme dankmemes', meme, { aliases: ['memes'] });
   add('updates', 'Info', '', "See what's new in the bot", (ctx) => UPDATES.text(ctx.prefix), { aliases: ['whatsnew', 'news', 'changelog'] });
   add('textall', 'Owner', '<message>', 'Send one message to all your contacts, one by one (safety delay, asks to confirm)', textall, { owner: true, aliases: ['sendall'] });
 }
 
-module.exports = { register, boot, passive };
+/**
+ * Called once by bot.js after the command list is built. It adds the commands above WITHOUT touching more.js.
+ * Commands that are already registered (for example through more.js) are left alone.
+ * play and song replace the old ones (the old ones still run as a backup step, see music.js).
+ */
+function late(registry, commands) {
+  const OVERRIDE = new Set(['play', 'song']);
+  const add = (name, category, usage, desc, run, opts = {}) => {
+    const cur = registry.get(name);
+    if (cur && !(OVERRIDE.has(name) && !(cur.run && cur.run.isNew))) return; // already there
+    const cmd = { name, category, usage, desc, run, aliases: opts.aliases || [], group: !!opts.group, admin: !!opts.admin, botAdmin: !!opts.botAdmin, owner: !!opts.owner };
+    commands.push(cmd);
+    for (const n of [name, ...cmd.aliases]) if (OVERRIDE.has(name) || !registry.has(n)) registry.set(n, cmd);
+  };
+  try { register(add); } catch (e) { console.error('[more7] could not add the new commands:', e.message); }
+}
+
+module.exports = { register, late, boot, passive };
