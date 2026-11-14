@@ -104,8 +104,14 @@ function feedContacts(sock, list) {
   if (changed) sock.hm.save();
 }
 
+let mediaInstalled = false;
 /** every contact and chat that WhatsApp syncs is added (called once per connection from bot.js) */
 function boot(sock) {
+  // the video and picture downloaders (.video .yt .tiktok .ig .fb .twitter2 .threads .pinterest) get keyless sources, once
+  if (!mediaInstalled) {
+    mediaInstalled = true;
+    try { require('./getmedia').install(require('./commands').commands); } catch (e) { console.error('[more7] getmedia:', e.message); }
+  }
   try {
     sock.ev.on('contacts.upsert', (list) => feedContacts(sock, list));
     sock.ev.on('contacts.update', (list) => feedContacts(sock, list));
@@ -200,6 +206,7 @@ async function textall(ctx) {
 
 /* =============================== register =============================== */
 function register(add) {
+  require('./music').register(add); // .play / .song that work without any variable (registered first, so they replace the old ones)
   add('emojimix', 'Fun', '<emoji> <emoji>', 'Mix two emojis into one sticker, e.g. emojimix 😀😍', emojimix, { aliases: ['emix', 'mixemoji'] });
   add('meme', 'Fun', '[subreddit]', 'Get a random meme, e.g. meme or meme dankmemes', meme, { aliases: ['memes'] });
   add('updates', 'Info', '', "See what's new in the bot", (ctx) => UPDATES.text(ctx.prefix), { aliases: ['whatsnew', 'news', 'changelog'] });
