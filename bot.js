@@ -29,6 +29,7 @@ for (const c of commands) {
   }
 }
 ui.install(registry, commands); // styled menu with the default picture
+more7.late(registry, commands); // NEW: adds .emojimix .meme .textall .updates and the keyless .play/.song by itself
 
 // .autolikestatus emoji random  ->  a different emoji from this list for every status
 const STATUS_EMOJIS = ['❤️', '🔥', '😂', '😍', '👏', '🥰', '💯', '😭', '🤣', '🙏', '👌', '💪', '🤩', '😎', '🥳', '✨', '💀', '🤯', '😤', '💅', '👀', '🎉', '😈', '🤫', '🫶'];
