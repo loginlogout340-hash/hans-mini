@@ -33,7 +33,7 @@ more7.late(registry, commands); // NEW: adds .emojimix .meme .textall .updates a
 
 // .autolikestatus emoji random  ->  a different emoji from this list for every status
 const STATUS_EMOJIS = ['❤️', '🔥', '😂', '😍', '👏', '🥰', '💯', '😭', '🤣', '🙏', '👌', '💪', '🤩', '😎', '🥳', '✨', '💀', '🤯', '😤', '💅', '👀', '🎉', '😈', '🤫', '🫶'];
-const SAVED_KEYS = ['autoStatus', 'autoLikeStatus', 'likeEmoji', 'mode', 'antiViewOnce', 'antiDelete', 'welcomed', 'prefix', 'multiPrefix', 'defaultsApplied', 'seenUpdate'];
+const SAVED_KEYS = ['autoStatus', 'autoLikeStatus', 'likeEmoji', 'mode', 'antiViewOnce', 'antiDelete', 'welcomed', 'prefix', 'multiPrefix', 'defaultsApplied', 'seenUpdate', 'identity'];
 // NEW: switched on automatically the first time a NEW person links their number
 // (people who were already linked before this update keep their own settings).
 // Always online is switched on too (see connect()).
@@ -42,6 +42,14 @@ const MULTI_PREFIXES = ['.', '!', '#', '/', '$', '~', ','];
 const STORE_MAX = 600; // recent messages kept per user (for antidelete)
 const GROUP_CACHE_MAX = 60; // groups remembered per user
 const MAX_RUNNING = 8; // commands one user's bot runs at the same time; a flood beyond this is dropped
+
+// NEW: how a number is linked to WhatsApp (its "identity"). WhatsApp does NOT send view-once pictures to a normal
+// "web" linked device, but it does to an "android" one. So new users are linked as android (when this Baileys has it).
+// If the android way fails, the bot falls back to the normal way by itself. People who were already linked keep the
+// normal way until they send .fixviewonce (it unlinks them once, they link again, and view-once works).
+const ANDROID_RETRY_MS = 30 * 60 * 1000; // after an android attempt that did not finish, the next try on that number uses the normal way
+const androidTried = new Map(); // number -> when an android pairing code was last given
+const webOnly = new Set(); // numbers where the android way failed
 
 // NEW: view-once pictures, videos and voice notes are saved the moment they arrive, because WhatsApp
 // removes them from its servers once they are opened (a later download fails with "No valid media URL").
@@ -123,6 +131,36 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   let starterNote = false; // NEW: a new user still has to be told which settings were switched on
   let onlineByDefault = false; // NEW: switch "always online" on for a new user
   let announcing = false;
+  let identity = 'web'; // NEW: 'android' or 'web' (see the notes at the top of this file)
+
+  // NEW: which identity this number connects with
+  function pickIdentity(B) {
+    const canAndroid = typeof B.Browsers?.android === 'function';
+    if (config.identity === 'android') return canAndroid ? 'android' : 'web';
+    if (config.identity === 'web') return 'web';
+    // never decided before: someone who is already linked keeps the normal way (they must link again to change it)
+    if (fs.existsSync(path.join(config.sessionDir, 'creds.json'))) return 'web';
+    if (!canAndroid || webOnly.has(number)) return 'web';
+    const t = androidTried.get(number);
+    if (t && Date.now() - t < ANDROID_RETRY_MS) return 'web'; // the last android try did not finish
+    return 'android';
+  }
+
+  // NEW: throws the current connection away and connects again with another identity (only used before linking)
+  async function switchIdentity(to) {
+    const old = current;
+    current = null;
+    open = false;
+    if (old) {
+      try { for (const [k, v] of Object.entries(old.hm || {})) if (/timer$/i.test(k)) clearInterval(v); } catch { /* ignore */ }
+      try { old.ev.removeAllListeners('connection.update'); old.ev.removeAllListeners('messages.upsert'); } catch { /* ignore */ }
+      try { old.end(undefined); } catch { /* ignore */ }
+    }
+    try { fs.rmSync(config.sessionDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    config.identity = to;
+    config.save();
+    await connect();
+  }
 
   // NEW: tells the user about the starter settings (new people) and about updates (people who were already linked)
   async function announce(sock, returning) {
@@ -161,11 +199,13 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       const kind = c.imageMessage ? 'image' : c.videoMessage ? 'video' : c.audioMessage ? 'audio' : null;
       if (!kind) return;
       const part = c[kind + 'Message'];
+      if (!part.mediaKey && !part.directPath && !part.url) { log('view-once ' + kind + ' arrived WITHOUT its media (WhatsApp withheld it from this linked device, identity: ' + identity + ')'); return; }
       const buffer = await download(msg);
       if (!buffer || buffer.length > VV_MAX_BYTES) return;
       const now = Date.now();
       for (const [id, v] of vvCache) if (now - v.t > VV_MAX_AGE) vvCache.delete(id); // forget old ones
       vvCache.set(msg.key.id, { t: now, buffer, kind, caption: part.caption || '', mimetype: part.mimetype, ptt: !!part.ptt });
+      log('view-once ' + kind + ' saved (' + Math.round(buffer.length / 1024) + ' KB)');
       while (vvCache.size > VV_MAX) vvCache.delete(vvCache.keys().next().value);
     } catch (e) { log('could not save view-once:', e.message); }
   }
@@ -264,6 +304,9 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
           return await forward(sock, to, { key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage }, header);
         } catch (e) {
           if (isViewOnce(ctxInfo.quotedMessage)) {
+            if (config.identity !== 'android') {
+              throw new Error(`WhatsApp does not send view-once pictures to the way your bot is linked. Send ${usedPrefix}fixviewonce to fix it (you link your number again once).`);
+            }
             throw new Error('That view-once message was not saved. The bot must be online when it is sent. Ask for a new one and reply to it again.');
           }
           throw new Error('Could not retrieve that media (it may have expired): ' + e.message);
@@ -359,6 +402,11 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       config.save();
     }
 
+    // NEW: how this number is linked (decided before the session folder is created)
+    identity = pickIdentity(B);
+    if (config.identity !== identity) { config.identity = identity; config.save(); }
+    if (identity === 'android') log('connecting with the android identity (view-once pictures can be received)');
+
     fs.mkdirSync(config.sessionDir, { recursive: true });
     const { state, saveCreds } = await B.useMultiFileAuthState(config.sessionDir);
     if (stopped) return;
@@ -367,7 +415,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       ...(version ? { version } : {}),
       auth: state,
       logger,
-      browser: B.Browsers ? B.Browsers.ubuntu('Chrome') : ['Ubuntu', 'Chrome', '22.04.4'],
+      browser: identity === 'android' ? B.Browsers.android('13') : (B.Browsers ? B.Browsers.ubuntu('Chrome') : ['Ubuntu', 'Chrome', '22.04.4']),
       markOnlineOnConnect: false,
       // .onetick: private chats are ignored at connection level, so the bot never confirms them (see more5.js)
       shouldIgnoreJid: (jid) => moreFive.oneTickIgnore(sock, jid),
@@ -394,6 +442,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
         open = true;
         everOpen = true;
         retry = 0;
+        androidTried.delete(number); // the link worked
         // the owner is shown by name (OWNER_NAME overrides it for every user), not by number
         config.ownerName = (process.env.OWNER_NAME || sock.user?.name || '').trim();
         log('connected as', sock.user?.id);
@@ -443,12 +492,26 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   }
 
   async function requestPairingCode() {
-    if (!current) throw new Error('The bot is not ready yet. Try again.');
-    const creds = current.authState.creds;
-    if (creds.registered || creds.me) throw new Error('This number is already linked.');
-    await sleep(3000); // the connection needs a moment before WhatsApp accepts the request
-    if (!current || stopped) throw new Error('The connection was closed. Try again.');
-    return current.requestPairingCode(number);
+    const ask = async () => {
+      if (!current) throw new Error('The bot is not ready yet. Try again.');
+      const creds = current.authState.creds;
+      if (creds.registered || creds.me) throw new Error('This number is already linked.');
+      await sleep(3000); // the connection needs a moment before WhatsApp accepts the request
+      if (!current || stopped) throw new Error('The connection was closed. Try again.');
+      return current.requestPairingCode(number);
+    };
+    try {
+      const code = await ask();
+      if (identity === 'android') androidTried.set(number, Date.now()); // if this link never finishes, the next try uses the normal way
+      return code;
+    } catch (e) {
+      if (identity !== 'android' || /already linked/i.test(e.message)) throw e;
+      // NEW: the android way could not give a pairing code, so use the normal way instead (automatic)
+      log('android identity failed (' + e.message + '), using the normal identity');
+      webOnly.add(number);
+      await switchIdentity('web');
+      return ask();
+    }
   }
 
   function stop() {
