@@ -205,6 +205,27 @@ async function textall(ctx) {
   return `📣 *Ready to send*\n\n"${st.pending.text}"\n\n👥 To: ${count} contact(s)${total > MAX_PER_RUN ? ` (the first ${MAX_PER_RUN} of ${total})` : ''}\n⏱ About ${mins} minute(s)\n\n⚠️ WhatsApp can block numbers that message many people. Only text people who know you.\n\nSend *${p}textall confirm* within 2 minutes to start, or ${p}textall cancel.`;
 }
 
+/* ============================= fixviewonce ============================= */
+// WhatsApp does not send view-once pictures to a normally linked bot. Linking again as "android" (see bot.js) fixes that.
+function siteUrl() {
+  const u = process.env.PUBLIC_URL || (process.env.RAILWAY_PUBLIC_DOMAIN ? 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN : '');
+  return String(u || '').replace(/\/+$/, '');
+}
+async function fixviewonce(ctx) {
+  if (!ctx.isMainOwner) throw new Error('Only the owner of this bot can use this command.');
+  const p = ctx.prefix;
+  if (ctx.config.identity === 'android') {
+    return '✅ Your bot is already linked the new way, so view-once messages can be saved. If one still fails, the bot was probably offline when it was sent.';
+  }
+  const where = siteUrl() || 'the Hans-Mini website';
+  if ((ctx.args[0] || '').toLowerCase() !== 'confirm') {
+    return `👁️ *View-once fix*\n\nWhatsApp does not send view-once pictures to the way your bot is linked now. Linking again fixes it.\n\nWhen you confirm:\n1. The bot unlinks your number.\n2. You open ${where} and link again with a new pairing code (about 1 minute).\n3. Your settings go back to the starter settings.\n\nReady? Send *${p}fixviewonce confirm*`;
+  }
+  await ctx.reply(`🔓 Unlinking now. Open ${where} and link your number again.`);
+  await sleep(2000);
+  await ctx.sock.logout(); // the bot then removes the old data by itself (manager.js)
+}
+
 /* =============================== register =============================== */
 function register(add) {
   // .play / .song that work without any variable (registered first, so they replace the old ones)
@@ -212,6 +233,7 @@ function register(add) {
   add('emojimix', 'Fun', '<emoji> <emoji>', 'Mix two emojis into one sticker, e.g. emojimix 😀😍', emojimix, { aliases: ['emix', 'mixemoji'] });
   add('meme', 'Fun', '[subreddit]', 'Get a random meme, e.g. meme or meme dankmemes', meme, { aliases: ['memes'] });
   add('updates', 'Info', '', "See what's new in the bot", (ctx) => UPDATES.text(ctx.prefix), { aliases: ['whatsnew', 'news', 'changelog'] });
+  add('fixviewonce', 'Owner', '[confirm]', 'Fix view-once retrieve: unlink and link your number again once', fixviewonce, { owner: true, aliases: ['fixvv'] });
   add('textall', 'Owner', '<message>', 'Send one message to all your contacts, one by one (safety delay, asks to confirm)', textall, { owner: true, aliases: ['sendall'] });
 }
 
