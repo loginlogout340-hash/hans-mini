@@ -53,9 +53,36 @@ const webOnly = new Set(); // numbers where the android way failed
 
 // NEW: view-once pictures, videos and voice notes are saved the moment they arrive, because WhatsApp
 // removes them from its servers once they are opened (a later download fails with "No valid media URL").
-const VV_MAX = 10; // view-once items kept per user (the oldest is dropped first)
-const VV_MAX_BYTES = 15 * 1024 * 1024; // anything bigger than 15 MB is not kept (protects the server memory)
-const VV_MAX_AGE = 3 * 60 * 60 * 1000; // kept for 3 hours
+const VV_MAX = 20; // view-once items kept per user in the vault (the oldest is dropped first)
+const VV_MAX_BYTES = 25 * 1024 * 1024; // anything bigger than 25 MB is not kept
+const VV_MAX_AGE = 6 * 60 * 60 * 1000; // kept for 6 hours
+
+// NEW: smarter command handling for every command
+const CMD_TIMEOUT_MS = Number(process.env.CMD_TIMEOUT_MS) || 330000; // a command that hangs is stopped after about 5 minutes and frees its slot
+const RATE_MAX = 8; // a normal user can run this many commands ...
+const RATE_WINDOW = 10000; // ... in this many milliseconds (the owner has no limit)
+
+// turns a technical error into something a normal person understands
+function friendlyError(err) {
+  const msg = String(err?.message || '');
+  const tech = msg + ' ' + (err?.cause?.code || err?.code || '') + ' ' + (err?.name || '');
+  if (/fetch failed|ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network/i.test(tech)) return 'A network problem happened. Please try again in a moment.';
+  if (/TimeoutError|aborted due to timeout|ETIMEDOUT|timed out/i.test(tech)) return 'The service took too long to answer. Please try again.';
+  if (/rate-overlimit|too many requests|HTTP 429/i.test(tech)) return 'The service is busy right now. Please try again in a minute.';
+  return msg || 'Something went wrong.';
+}
+// how many edits turn one word into another (a swapped pair like "plya" -> "play" counts as one)
+function lev(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
 
 const norm = (j) => String(j || '').replace(/:\d+@/, '@');
 const digits = (j) => String(j || '').split('@')[0].split(':')[0].replace(/\D/g, '');
@@ -79,7 +106,7 @@ function loadBaileys() {
 }
 
 function createBot({ number, dir, onLoggedOut, onEvent }) {
-  const stats = { since: Date.now(), commands: 0, lastActive: 0 }; // for the admin (.users)
+  const stats = { since: Date.now(), commands: 0, lastActive: 0, byCmd: {} }; // for the admin (.users) and .cmdstats
   const emit = (type, data) => { try { if (onEvent) onEvent(type, data || {}); } catch (e) { console.error(`[${number}] event error:`, e.message); } };
   const config = {
     botName: process.env.BOT_NAME || 'Hans-Mini',
@@ -98,6 +125,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     welcomed: false,
   };
   const settingsFile = path.join(dir, 'settings.json');
+  more7.restoreRelink(number, dir); // NEW: someone who unlinked with .fixviewonce gets their settings back
   try {
     const saved = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
     for (const k of SAVED_KEYS) if (saved[k] !== undefined) config[k] = saved[k];
@@ -126,12 +154,14 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   let download = null;
   const store = new Map();
   const groupCache = new Map();
-  const vvCache = new Map(); // NEW: message id -> saved view-once media
+  const rate = new Map(); // NEW: sender -> times of their recent commands
+  const notes = new Map(); // NEW: chat -> when the last hint ("did you mean", "slow down") was sent
   let running = 0; // commands running right now
   let starterNote = false; // NEW: a new user still has to be told which settings were switched on
   let onlineByDefault = false; // NEW: switch "always online" on for a new user
   let announcing = false;
   let identity = 'web'; // NEW: 'android' or 'web' (see the notes at the top of this file)
+  let lastVvNudge = 0; // NEW: when the owner was last told about .fixviewonce
 
   // NEW: which identity this number connects with
   function pickIdentity(B) {
@@ -191,32 +221,131 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     return data;
   }
 
-  // NEW: save a view-once message right when it arrives (before it is opened and removed by WhatsApp)
+  // ---------------- NEW: the view-once vault ----------------
+  // A view-once message is saved on disk the moment it arrives (before WhatsApp removes it), so it survives a restart.
+  // Each item has a small .json file (who, when, what) and a .bin file (the picture / video / voice note itself).
+  const vvDir = path.join(dir, 'vv');
+  const vvIndex = new Map(); // message id -> { id, t, kind, caption, mimetype, ptt, chat, from, name, size }
+  const vvPath = (id) => path.join(vvDir, String(id).replace(/[^A-Za-z0-9_-]/g, '_'));
+  let vvLoaded = false;
+  function vvDrop(id) { vvIndex.delete(id); for (const e of ['.bin', '.json']) fs.unlink(vvPath(id) + e, () => {}); }
+  function vvPurge() {
+    const now = Date.now();
+    for (const [id, m] of vvIndex) if (now - m.t > VV_MAX_AGE) vvDrop(id); // too old
+    const list = [...vvIndex.values()].sort((a, b) => a.t - b.t);
+    while (list.length > VV_MAX) vvDrop(list.shift().id); // too many: the oldest go first
+  }
+  function vvLoad() {
+    if (vvLoaded) return;
+    vvLoaded = true;
+    try {
+      for (const f of fs.readdirSync(vvDir)) {
+        if (!f.endsWith('.json')) continue;
+        try { const m = JSON.parse(fs.readFileSync(path.join(vvDir, f), 'utf8')); if (m && m.id) vvIndex.set(m.id, m); } catch { /* skip a broken file */ }
+      }
+    } catch { /* no vault yet */ }
+    vvPurge();
+  }
+  function vvPut(meta, buffer) {
+    fs.mkdirSync(vvDir, { recursive: true });
+    fs.writeFileSync(vvPath(meta.id) + '.bin', buffer);
+    fs.writeFileSync(vvPath(meta.id) + '.json', JSON.stringify(meta));
+    vvIndex.set(meta.id, meta);
+    vvPurge();
+  }
+  function vvGet(id) {
+    vvLoad();
+    const m = id && vvIndex.get(id);
+    if (!m) return null;
+    try { return { ...m, buffer: fs.readFileSync(vvPath(id) + '.bin') }; } catch { vvIndex.delete(id); return null; }
+  }
+  const vvList = (chat) => { vvLoad(); return [...vvIndex.values()].filter((m) => !chat || m.chat === chat).sort((a, b) => b.t - a.t); };
+
+  // one download, with one more try if the first one fails
+  async function downloadRetry(m) {
+    try { return await download(m); } catch { await sleep(1500); return download(m); }
+  }
+
+  // save a view-once message right when it arrives
   async function saveViewOnce(msg) {
     try {
-      if (!download || !msg.key?.id || vvCache.has(msg.key.id)) return;
+      vvLoad();
+      if (!download || !msg.key?.id || vvIndex.has(msg.key.id)) return;
       const c = unwrap(msg.message);
       const kind = c.imageMessage ? 'image' : c.videoMessage ? 'video' : c.audioMessage ? 'audio' : null;
       if (!kind) return;
       const part = c[kind + 'Message'];
-      if (!part.mediaKey && !part.directPath && !part.url) { log('view-once ' + kind + ' arrived WITHOUT its media (WhatsApp withheld it from this linked device, identity: ' + identity + ')'); return; }
-      const buffer = await download(msg);
-      if (!buffer || buffer.length > VV_MAX_BYTES) return;
-      const now = Date.now();
-      for (const [id, v] of vvCache) if (now - v.t > VV_MAX_AGE) vvCache.delete(id); // forget old ones
-      vvCache.set(msg.key.id, { t: now, buffer, kind, caption: part.caption || '', mimetype: part.mimetype, ptt: !!part.ptt });
-      log('view-once ' + kind + ' saved (' + Math.round(buffer.length / 1024) + ' KB)');
-      while (vvCache.size > VV_MAX) vvCache.delete(vvCache.keys().next().value);
+      if (!part.mediaKey && !part.directPath && !part.url) {
+        log('view-once ' + kind + ' arrived WITHOUT its media (WhatsApp withheld it from this linked device, identity: ' + identity + ')');
+        // tell the owner (at most once a day) how to fix it
+        if (identity !== 'android' && !msg.key.fromMe && Date.now() - lastVvNudge > 24 * 60 * 60 * 1000 && current) {
+          lastVvNudge = Date.now();
+          current.sendMessage(ownerJid(), { text: `👁️ A view-once message just arrived, but WhatsApp did not give it to your bot.\nSend ${config.prefix}fixviewonce to fix this (you link your number again once, and your settings are kept).` }).catch(() => {});
+        }
+        return;
+      }
+      const buffer = await downloadRetry(msg);
+      if (!buffer || !buffer.length || buffer.length > VV_MAX_BYTES) return;
+      vvPut({
+        id: msg.key.id, t: Date.now(), kind, caption: part.caption || '', mimetype: part.mimetype || '', ptt: !!part.ptt,
+        chat: msg.key.remoteJid, from: digits(msg.key.participant || msg.key.remoteJid), name: msg.pushName || '', size: buffer.length,
+      }, buffer);
+      log('view-once ' + kind + ' saved in the vault (' + Math.round(buffer.length / 1024) + ' KB)');
     } catch (e) { log('could not save view-once:', e.message); }
   }
 
-  // NEW: send a saved view-once item to a chat
+  // send a saved view-once item to a chat
   async function sendSaved(sock, to, hit, header = '') {
     const cap = [header, hit.caption].filter(Boolean).join('\n\n');
     if (hit.kind === 'image') return sock.sendMessage(to, { image: hit.buffer, caption: cap });
     if (hit.kind === 'video') return sock.sendMessage(to, { video: hit.buffer, caption: cap });
     if (header) await sock.sendMessage(to, { text: header });
     return sock.sendMessage(to, { audio: hit.buffer, mimetype: hit.mimetype || 'audio/ogg; codecs=opus', ptt: !!hit.ptt });
+  }
+
+  // ---------------- NEW: helpers for every command ----------------
+  const withTimeout = (p, ms) => new Promise((ok, no) => {
+    const t = setTimeout(() => no(new Error('That took too long and was stopped. Please try again.')), ms);
+    Promise.resolve(p).then((v) => { clearTimeout(t); ok(v); }, (e) => { clearTimeout(t); no(e); });
+  });
+  function rateOk(key) {
+    const now = Date.now();
+    const arr = (rate.get(key) || []).filter((t) => now - t < RATE_WINDOW);
+    if (arr.length >= RATE_MAX) { rate.set(key, arr); return false; }
+    arr.push(now);
+    rate.set(key, arr);
+    if (rate.size > 500) rate.delete(rate.keys().next().value);
+    return true;
+  }
+  // at most one hint per chat every `ms`
+  function hintOk(chat, kind, ms) {
+    const k = kind + chat, now = Date.now();
+    if (now - (notes.get(k) || 0) < ms) return false;
+    notes.set(k, now);
+    if (notes.size > 300) notes.delete(notes.keys().next().value);
+    return true;
+  }
+  const bump = (name, failed, ms) => { const e = (stats.byCmd[name] ||= { n: 0, err: 0, ms: 0 }); e.n++; if (failed) e.err++; e.ms += ms; };
+
+  // "did you mean ...?" for a mistyped command (private chats and the owner only, never in other people's groups)
+  function suggest(sock, msg, jid, p, typed) {
+    try {
+      const word = String(typed).toLowerCase();
+      if (!/^[a-z0-9]{2,20}$/.test(word)) return;
+      if (jid.endsWith('@g.us') && !msg.key.fromMe) return;
+      if (config.mode === 'private' && !msg.key.fromMe) return;
+      if (!hintOk(jid, 'sg', 20000)) return;
+      const max = word.length <= 4 ? 1 : 2;
+      const found = new Map(); // command -> best distance
+      for (const [name, c] of registry) {
+        if (name.length < 3 || Math.abs(name.length - word.length) > max + 3) continue;
+        const d = word.length >= 3 && name.startsWith(word) ? 0 : lev(word, name);
+        if (d <= max && !(found.get(c) <= d)) found.set(c, d);
+      }
+      const top = [...found.entries()].sort((a, b) => a[1] - b[1] || a[0].name.length - b[0].name.length).slice(0, 2).map(([c]) => '*' + p + c.name + '*');
+      if (!top.length) return;
+      sock.sendMessage(jid, { text: `🤔 *${p}${word}* is not a command. Did you mean ${top.join(' or ')}?\nType *${p}menu* to see all commands.` }, { quoted: msg }).catch(() => {});
+    } catch { /* a hint must never break anything */ }
   }
 
   // a sticker bound with .stickcmd runs its command (owner only); the sticker's reply context is kept
@@ -249,7 +378,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     const m = body.slice(usedPrefix.length).match(/^\s*(\S+)\s*([\s\S]*)$/);
     if (!m) return;
     const cmd = registry.get(m[1].toLowerCase());
-    if (!cmd) return;
+    if (!cmd) return void suggest(sock, msg, jid, usedPrefix, m[1]); // NEW: "did you mean ...?"
     const text = m[2].trim();
 
     const isGroup = jid.endsWith('@g.us');
@@ -262,6 +391,11 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     const sudo = sock.hm?.db?.sudo || []; // extra owners added with .setsudo
     const isOwner = isMainOwner || senderIds.some((s) => sudo.includes(digits(s)));
     if (config.mode === 'private' && !isOwner) return;
+    // NEW: a normal user cannot flood the bot (the owner has no limit)
+    if (!isOwner && !rateOk(senderIds[0] || jid)) {
+      if (hintOk(jid, 'sl', RATE_WINDOW)) sock.sendMessage(jid, { text: '🐢 Slow down a little, then try again.' }, { quoted: msg }).catch(() => {});
+      return;
+    }
     stats.commands++; stats.lastActive = Date.now();
     emit('command', { name: cmd.name, by: digits(senderIds[0]), group: isGroup });
 
@@ -285,21 +419,34 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       sendImage: (url, caption) => send({ image: { url }, caption }),
       getGroup: () => getGroup(sock, jid),
       ownerJid: ownerJid(),
+      stats,
+      // NEW: the view-once vault (used by .vvlist and .vvget)
+      vv: {
+        list: (all) => vvList(all ? null : jid),
+        get: vvGet,
+        send: (id, to, header) => { const h = vvGet(id); if (!h) throw new Error('That item is no longer in the vault.'); return sendSaved(sock, to, h, header); },
+      },
       // the picture sent with the command, or the one it replies to
       downloadMedia: async () => {
         if (!download) throw new Error('The bot is not ready yet. Try again.');
         if (message.imageMessage) return download(msg);
         if (!ctxInfo.quotedMessage) throw new Error('Reply to a picture, or send a picture with this command as its caption.');
         // NEW: a view-once picture was saved when it arrived, so use that copy
-        const saved = vvCache.get(ctxInfo.stanzaId);
+        const saved = vvGet(ctxInfo.stanzaId);
         if (saved) return saved.buffer;
         return download({ key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage });
       },
       forwardQuoted: async (to, header) => {
-        if (!ctxInfo.quotedMessage) throw new Error('Reply to the message you want to retrieve.');
+        // NEW: .retrieve without a reply sends the newest view-once message saved in this chat
+        if (!ctxInfo.quotedMessage) {
+          const last = cmd.name === 'retrieve' ? vvList(jid)[0] : null;
+          const hit = last && vvGet(last.id);
+          if (hit) return sendSaved(sock, to, hit, header);
+          throw new Error('Reply to the message you want to retrieve.' + (cmd.name === 'retrieve' ? ' (No view-once message is saved in this chat yet.)' : ''));
+        }
         try {
-          // NEW: a view-once message was saved when it arrived, so send that copy
-          const saved = vvCache.get(ctxInfo.stanzaId);
+          // a view-once message was saved when it arrived, so send that copy
+          const saved = vvGet(ctxInfo.stanzaId);
           if (saved) return await sendSaved(sock, to, saved, header);
           return await forward(sock, to, { key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage }, header);
         } catch (e) {
@@ -328,11 +475,14 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       if (cmd.admin && !ctx.isAdmin) return void (await ctx.reply('⛔ Only group admins can use this command.'));
       if (cmd.botAdmin && !ctx.isBotAdmin) return void (await ctx.reply('⚠️ Make me a group admin first, then try again.'));
 
-      const out = await cmd.run(ctx);
+      const t0 = Date.now();
+      const out = await withTimeout(cmd.run(ctx), CMD_TIMEOUT_MS); // NEW: a hanging command is stopped
+      bump(cmd.name, false, Date.now() - t0);
       if (typeof out === 'string' && out) await ctx.reply(out);
     } catch (err) {
+      bump(cmd.name, true, 0);
       console.error(`[${number}] [${cmd.name}]`, err);
-      await ctx.reply('⚠️ ' + (err && err.message ? err.message : 'Something went wrong.')).catch(() => {});
+      await ctx.reply('⚠️ ' + friendlyError(err)).catch(() => {}); // NEW: plain words instead of technical errors
     } finally { running--; }
   }
 
@@ -443,6 +593,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
         everOpen = true;
         retry = 0;
         androidTried.delete(number); // the link worked
+        more7.clearRelink(number); // the saved copy of the settings is no longer needed
         // the owner is shown by name (OWNER_NAME overrides it for every user), not by number
         config.ownerName = (process.env.OWNER_NAME || sock.user?.name || '').trim();
         log('connected as', sock.user?.id);
@@ -519,7 +670,6 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     open = false;
     const s = current;
     current = null;
-    vvCache.clear(); // NEW: free the saved view-once media
     if (!s) return;
     // every timer this socket started (always-online, schedules, reminders, auto bio ...)
     try { for (const [k, v] of Object.entries(s.hm || {})) if (/timer$/i.test(k)) clearInterval(v); } catch { /* ignore */ }
