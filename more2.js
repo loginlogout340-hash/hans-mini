@@ -11,6 +11,8 @@
  *   AI_URL   full chat-completions address, e.g. https://api.openai.com/v1/chat/completions
  *   AI_KEY   your key
  *   AI_MODEL model name (default gpt-4o-mini when AI_URL is set)
+ *
+ * askAI is shared with hanson.js (it was missing from the exports, which made Hanson answer "askAI is not a function").
  */
 const num = (j = '') => String(j).split('@')[0].split(':')[0].replace(/\D/g, '');
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
@@ -36,24 +38,111 @@ function quotedText(ctx) {
 }
 
 /* ---------------- AI ---------------- */
-async function askAI(messages) {
+// The free service only allows a few requests, so every question goes through a small queue, is tried again when
+// the service is busy, falls back to another model, and an identical question asked again within 5 minutes is
+// answered from memory.
+const AI_GAP_MS = 2500; // minimum time between two requests to the service
+const AI_QUEUE_MAX = 6; // more questions than this waiting at once get a "busy" answer
+const AI_CACHE_MS = 5 * 60 * 1000;
+const aiCache = new Map();
+let aiTail = Promise.resolve();
+let aiWaiting = 0;
+let aiLastStart = 0;
+
+async function aiRequest(messages, model) {
   const url = process.env.AI_URL;
   const headers = { 'Content-Type': 'application/json' };
   if (process.env.AI_KEY) headers.Authorization = 'Bearer ' + process.env.AI_KEY;
-  const body = { model: process.env.AI_MODEL || (url ? 'gpt-4o-mini' : 'openai'), messages };
-  const r = await fetch(url || 'https://text.pollinations.ai/openai', { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(40000) });
-  if (!r.ok) throw new Error(`The AI service returned HTTP ${r.status}. Try again, or set AI_URL and AI_KEY on Railway to use your own service.`);
+  const r = await fetch(url || 'https://text.pollinations.ai/openai', { method: 'POST', headers, body: JSON.stringify({ model, messages }), signal: AbortSignal.timeout(25000) });
+  if (!r.ok) {
+    const e = new Error('HTTP ' + r.status);
+    e.status = r.status;
+    e.retryAfter = Number(r.headers.get('retry-after')) || 0;
+    throw e;
+  }
   const j = await r.json();
   const out = String(j.choices?.[0]?.message?.content || '').trim();
-  if (!out) throw new Error('The AI sent an empty answer. Try again.');
+  if (!out) { const e = new Error('empty answer'); e.status = 204; throw e; }
   return out.slice(0, 3500);
+}
+
+// last resort: the plain-text address of the free service
+async function aiPlain(messages) {
+  const sys = messages.filter((m) => m.role === 'system').map((m) => m.content).join(' ').slice(0, 600);
+  const last = messages.filter((m) => m.role !== 'system').slice(-1)[0]?.content || '';
+  const r = await fetch(`https://text.pollinations.ai/${encodeURIComponent(String(last).slice(0, 1500))}?model=openai-fast&system=${encodeURIComponent(sys)}`, { signal: AbortSignal.timeout(25000) });
+  if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+  const out = (await r.text()).trim();
+  if (!out) throw new Error('empty answer');
+  return out.slice(0, 3500);
+}
+
+function aiError(e) {
+  const s = e && e.status;
+  if (s === 401 || s === 402 || s === 403) return new Error(`The AI service refused the request (HTTP ${s}). The owner can set AI_URL and AI_KEY on Railway to use their own AI service.`);
+  if (s === 429) return new Error('The free AI service is busy right now. Please try again in a minute.');
+  return new Error('The AI service is not answering right now. Please try again in a moment.');
+}
+
+async function aiTask(messages) {
+  const custom = !!process.env.AI_URL;
+  const models = custom ? [process.env.AI_MODEL || 'gpt-4o-mini'] : ['openai-fast', 'openai'];
+  const deadline = Date.now() + 50000; // never more than about 50 seconds
+  let last;
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2 && Date.now() < deadline; attempt++) {
+      try { return await aiRequest(messages, model); }
+      catch (e) {
+        last = e;
+        if (e.status === 401 || e.status === 402 || e.status === 403) break; // a key problem: trying again will not help
+        if (e.status === 429 || e.status >= 500 || !e.status) await sleep(Math.min(8000, (e.retryAfter || 3 * (attempt + 1)) * 1000)); // busy: wait, then try again
+        else break; // another kind of error: go to the next model
+      }
+    }
+  }
+  if (!custom && Date.now() < deadline) {
+    try { return await aiPlain(messages); } catch (e) { last = e; }
+  }
+  throw aiError(last);
+}
+
+// one question at a time, with a short gap between requests
+function inQueue(task) {
+  aiWaiting++;
+  const run = aiTail.then(async () => {
+    const wait = aiLastStart + AI_GAP_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    aiLastStart = Date.now();
+    return task();
+  });
+  aiTail = run.catch(() => {});
+  return run.finally(() => { aiWaiting--; });
+}
+
+async function askAI(messages) {
+  const key = JSON.stringify(messages).slice(-1500);
+  const hit = aiCache.get(key);
+  if (hit && Date.now() - hit.t < AI_CACHE_MS) return hit.out;
+  if (aiWaiting >= AI_QUEUE_MAX) throw new Error('The AI is very busy right now. Please try again in a minute.');
+  const out = await inQueue(() => aiTask(messages));
+  aiCache.set(key, { t: Date.now(), out });
+  if (aiCache.size > 100) aiCache.delete(aiCache.keys().next().value);
+  return out;
 }
 
 async function makeImage(prompt) {
   const u = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=768&height=768&nologo=true&seed=${Math.floor(Math.random() * 1e6)}`;
-  const r = await fetch(u, { signal: AbortSignal.timeout(60000) });
-  if (!r.ok || !String(r.headers.get('content-type') || '').startsWith('image')) throw new Error(`The image service returned HTTP ${r.status}. Try again in a minute.`);
-  return Buffer.from(await r.arrayBuffer());
+  let status = 0;
+  for (let i = 0; i < 3; i++) {
+    const r = await fetch(u, { signal: AbortSignal.timeout(60000) }).catch(() => null);
+    if (r && r.ok && String(r.headers.get('content-type') || '').startsWith('image')) return Buffer.from(await r.arrayBuffer());
+    status = r ? r.status : 0;
+    if (status && status !== 429 && status < 500) break; // another kind of error: trying again will not help
+    if (i < 2) await sleep(8000 * (i + 1)); // the free service allows only a few pictures a minute: wait, then try again
+  }
+  throw new Error(status === 429
+    ? 'The free image service is busy right now (it only allows a few pictures a minute). Please try again in a minute.'
+    : `The image service returned ${status ? 'HTTP ' + status : 'no answer'}. Try again in a minute.`);
 }
 
 /* ---------------- admin guard (same rules as admin.js) ---------------- */
@@ -220,4 +309,4 @@ async function passive(sock, m) {
 
 function boot() { /* nothing to start */ }
 
-module.exports = { register, boot, passive };
+module.exports = { register, boot, passive, askAI };
