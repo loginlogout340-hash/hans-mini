@@ -4,10 +4,16 @@
  * When you publish a new update: change `version` and `notes`. Every user who was already linked gets
  * the notes once, in their own chat, the next time their bot connects. They can read them again with .updates
  */
-const version = '2.5.0';
+const version = '2.7.0';
 
 const notes = [
-  '👁️ *View-once fix* : WhatsApp only sends view-once pictures to bots that are linked the new way. Send {p}fixviewonce once: the bot unlinks you, you link again on the website, and after that {p}retrieve can save view-once pictures. New users are already linked the new way.',
+  '🛠️ *Smarter bot* : Hanson works again. Mistyped commands get a "did you mean ...?" hint. Errors are shown in plain words, a stuck command is stopped by itself, and flooding the bot is slowed down.',
+  '',
+  '👁️ *View-once vault* : view-once messages are kept for 6 hours, even after a restart. {p}retrieve now also works without replying (it sends the newest one). New: {p}vvlist and {p}vvget 1.',
+  '',
+  '🤖 *AI* : {p}ai, {p}translate, {p}summarize and Hanson retry by themselves when the free AI service is busy.',
+  '',
+  '👁️ *View-once fix* : WhatsApp only sends view-once pictures to bots that are linked the new way. Send {p}fixviewonce, then {p}fixviewonce confirm. The bot unlinks you, sends you a new pairing code in a WhatsApp message, and you enter it in Linked devices. Your settings are kept. After that {p}retrieve can save view-once pictures. New users are already linked the new way.',
   '',
   '🎵 *Music* : {p}play and {p}song now work on their own, with no setup or keys. If one source is down, the bot tries the next.',
   '',
