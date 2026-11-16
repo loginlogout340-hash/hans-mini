@@ -19,6 +19,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const heavy = require('./limit').run; // limits how many yt-dlp / ffmpeg jobs run at once
+const heal = (() => { try { return require('./selfheal'); } catch { return null; } })(); // optional: the bot works without it
 
 const MAX_MB = 64; // biggest file the bot will download (protects the server memory)
 const MAX = MAX_MB * 1048576;
@@ -263,21 +264,39 @@ const COMMUNITY = {
     ['vreden', 'https://api.vreden.my.id/api/v1/download/threads?url={u}'],
   ],
 };
+const BUILTIN_COMMUNITY = JSON.parse(JSON.stringify(COMMUNITY));
+let DISABLED = new Set(); // source names switched off by sources.json
 const community = (platform) => (COMMUNITY[platform] || []).map(([name, tpl]) => ({
   name,
   run: async (link, o) => mediaFromJson(await getJson(tpl.replace('{u}', enc(link)).replace('{q}', String(o.height || 360)))),
 }));
 
 const SRC = (name, run) => ({ name, run });
-const SOURCES = {
-  tiktok: [SRC('tikwm', tikwm), SRC('yt-dlp', ytdlp), ...community('tiktok')],
-  twitter: [SRC('fxtwitter', fxtwitter), SRC('vxtwitter', vxtwitter), SRC('yt-dlp', ytdlp), ...community('twitter')],
-  instagram: [SRC('embed page', instaEmbed), ...community('instagram'), SRC('yt-dlp', ytdlp)],
-  facebook: [SRC('yt-dlp', ytdlp), ...community('facebook')],
-  pinterest: [SRC('pin page', pinPage), SRC('yt-dlp', ytdlp), ...community('pinterest')],
-  threads: [SRC('yt-dlp', ytdlp), ...community('threads')],
-  youtube: [...community('youtube'), SRC('yt-dlp', (l, o) => ytdlp(l, { ...o, youtube: true }))],
+const buildSources = () => {
+  const s = {
+    tiktok: [SRC('tikwm', tikwm), SRC('yt-dlp', ytdlp), ...community('tiktok')],
+    twitter: [SRC('fxtwitter', fxtwitter), SRC('vxtwitter', vxtwitter), SRC('yt-dlp', ytdlp), ...community('twitter')],
+    instagram: [SRC('embed page', instaEmbed), ...community('instagram'), SRC('yt-dlp', ytdlp)],
+    facebook: [SRC('yt-dlp', ytdlp), ...community('facebook')],
+    pinterest: [SRC('pin page', pinPage), SRC('yt-dlp', ytdlp), ...community('pinterest')],
+    threads: [SRC('yt-dlp', ytdlp), ...community('threads')],
+    youtube: [...community('youtube'), SRC('yt-dlp', (l, o) => ytdlp(l, { ...o, youtube: true }))],
+  };
+  for (const k of Object.keys(s)) s[k] = s[k].filter((x) => !DISABLED.has(x.name));
+  return s;
 };
+let SOURCES = buildSources();
+
+// live fixes: selfheal.js reads sources.json from GitHub and hands the community lists here (no redeploy needed)
+if (heal) {
+  heal.onConfig('community', (obj, disabled = []) => {
+    DISABLED = new Set(disabled);
+    const merged = { ...BUILTIN_COMMUNITY, ...(obj || {}) };
+    for (const k of Object.keys(COMMUNITY)) delete COMMUNITY[k];
+    Object.assign(COMMUNITY, merged);
+    SOURCES = buildSources();
+  });
+}
 
 const PLATFORMS = [
   ['tiktok', /(?:tiktok\.com|vm\.tiktok|vt\.tiktok)/i],
@@ -319,16 +338,20 @@ async function getMedia(link, o = {}) {
   const now = Date.now();
   let list = SOURCES[platform].filter((s) => (dead.get(platform + ':' + s.name) || 0) < now);
   if (!list.length) list = SOURCES[platform];
+  if (heal) list = heal.rank(list, (s) => platform + ':' + s.name); // the best source (by its real results) goes first
   const deadline = now + 110000; // never wait more than about 2 minutes
   const errs = [];
   for (const s of list) {
     if (Date.now() > deadline) break;
     const key = platform + ':' + s.name;
+    const t0 = Date.now();
     try {
       const got = await realize(await s.run(link, o));
       dead.delete(key);
+      if (heal) heal.record(key, true, Date.now() - t0);
       return got;
     } catch (e) {
+      if (heal) { heal.record(key, false); if (platform === 'youtube' && s.name === 'yt-dlp') heal.noteFailure('youtube', e.message); }
       if (isDown(e)) dead.set(key, Date.now() + 10 * 60 * 1000); // only a source that is down is skipped, not one that just lacks this post
       errs.push(s.name + ': ' + (e.cause?.code || e.message).toString().slice(0, 70));
     }
@@ -407,4 +430,4 @@ function install(commands) {
   }
 }
 
-module.exports = { install, getMedia, detect, mediaFromJson, sniff, SOURCES };
+module.exports = { install, getMedia, detect, mediaFromJson, sniff, get SOURCES() { return SOURCES; }, COMMUNITY, getJson, tikwm };
