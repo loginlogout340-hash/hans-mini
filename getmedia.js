@@ -263,6 +263,10 @@ const COMMUNITY = {
   threads: [
     ['vreden', 'https://api.vreden.my.id/api/v1/download/threads?url={u}'],
   ],
+  terabox: [ // used by .terabox (files.js); TeraBox fights downloaders, so this is the least reliable list
+    ['vreden', 'https://api.vreden.my.id/api/v1/download/terabox?url={u}'],
+    ['siputzx', 'https://api.siputzx.my.id/api/d/terabox?url={u}'],
+  ],
 };
 const BUILTIN_COMMUNITY = JSON.parse(JSON.stringify(COMMUNITY));
 let DISABLED = new Set(); // source names switched off by sources.json
