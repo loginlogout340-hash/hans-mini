@@ -19,6 +19,7 @@ const moreFive = require('./more5');
 const hanson = require('./hanson'); // Hanson, the built-in AI assistant (turned on with .hanson on)
 const more7 = require('./more7'); // NEW: emojimix, meme, textall (contact book), updates
 const UPDATES = require('./updates'); // NEW: the "what's new" notes shown to users
+const heal = (() => { try { return require('./selfheal'); } catch { return { noteEvent() {}, noteError() {} }; } })(); // NEW: the bot repairs itself (optional file)
 
 // name/alias -> command (shared by every user, built once)
 const registry = new Map();
@@ -65,6 +66,8 @@ const RATE_WINDOW = 10000; // ... in this many milliseconds (the owner has no li
 // turns a technical error into something a normal person understands
 function friendlyError(err) {
   const msg = String(err?.message || '');
+  // a message the bot wrote itself (several lines, or a long explanation) is shown exactly as it is
+  if (msg.includes('\n') || msg.length > 140) return msg;
   const tech = msg + ' ' + (err?.cause?.code || err?.code || '') + ' ' + (err?.name || '');
   if (/fetch failed|ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network/i.test(tech)) return 'A network problem happened. Please try again in a moment.';
   if (/TimeoutError|aborted due to timeout|ETIMEDOUT|timed out/i.test(tech)) return 'The service took too long to answer. Please try again.';
@@ -191,6 +194,48 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     config.save();
     await connect();
   }
+
+  // ---------------- NEW: the watchdog (a stuck or offline bot reconnects by itself) ----------------
+  let lastDownAt = 0; // when the connection last closed
+  let lastRestartAt = 0; // when the watchdog last restarted it
+  let badSocketChecks = 0;
+  const wsAlive = (s) => { // does the socket still have a working web connection?
+    const w = s && s.ws;
+    if (!w) return true; // cannot tell: assume yes
+    if (typeof w.isOpen === 'boolean') return w.isOpen;
+    if (typeof w.readyState === 'number') return w.readyState === 1;
+    return true;
+  };
+  // throw the old connection away and connect again (the same thing the normal reconnect does, but it cannot get stuck)
+  async function restartSocket(reason) {
+    if (stopped) return;
+    lastRestartAt = Date.now();
+    heal.noteEvent('watchdog', `bot ...${String(number).slice(-4)} reconnected by itself: ${reason}`);
+    const old = current;
+    current = null;
+    open = false;
+    if (old) {
+      try { for (const [k, v] of Object.entries(old.hm || {})) if (/timer$/i.test(k)) clearInterval(v); } catch { /* ignore */ }
+      try { old.ev.removeAllListeners('connection.update'); old.ev.removeAllListeners('messages.upsert'); } catch { /* ignore */ }
+      try { old.end(undefined); } catch { /* ignore */ }
+    }
+    await connect();
+  }
+  const watchdog = setInterval(() => {
+    try {
+      if (stopped) { clearInterval(watchdog); return; }
+      if (open && current && !wsAlive(current)) { // looks connected, but the socket is closed
+        if (++badSocketChecks >= 2) { badSocketChecks = 0; restartSocket('the connection looked open but the socket was closed').catch((e) => console.error(`[${number}] watchdog restart failed:`, e.message)); }
+        return;
+      }
+      badSocketChecks = 0;
+      // linked before, but offline for 5 minutes: the normal reconnect failed or got stuck
+      if (!open && everOpen && Date.now() - Math.max(lastDownAt, lastRestartAt) > 5 * 60000) {
+        restartSocket('offline for more than 5 minutes').catch((e) => console.error(`[${number}] watchdog restart failed:`, e.message));
+      }
+    } catch { /* the watchdog must never throw */ }
+  }, 90000);
+  watchdog.unref();
 
   // NEW: tells the user about the starter settings (new people) and about updates (people who were already linked)
   async function announce(sock, returning) {
@@ -481,6 +526,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       if (typeof out === 'string' && out) await ctx.reply(out);
     } catch (err) {
       bump(cmd.name, true, 0);
+      heal.noteError(cmd.name, err); // NEW: counted for .errors (phone numbers are hidden)
       console.error(`[${number}] [${cmd.name}]`, err);
       await ctx.reply('⚠️ ' + friendlyError(err)).catch(() => {}); // NEW: plain words instead of technical errors
     } finally { running--; }
@@ -605,6 +651,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       }
       if (connection === 'close') {
         open = false;
+        lastDownAt = Date.now();
         if (stopped) return;
         const code = lastDisconnect?.error?.output?.statusCode;
         if (code === B.DisconnectReason.loggedOut) {
@@ -615,8 +662,15 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
           return;
         }
         retry++;
+        // code 440: the same login is open somewhere else (for example an old copy of the bot is still running).
+        // Reconnecting at once would start a fight with it, so wait much longer.
+        const conflict = code === 440;
+        if (conflict && (retry === 1 || retry % 5 === 0)) heal.noteEvent('conflict', `bot ...${String(number).slice(-4)}: this login is open somewhere else (code 440). Is an old copy of the bot still running?`);
         log('connection closed (code ' + code + '), reconnecting...');
-        setTimeout(() => connect().catch((e) => console.error(`[${number}] reconnect failed:`, e.message)), Math.min(30000, 3000 * retry));
+        setTimeout(() => {
+          if (stopped || current !== sock) return; // the watchdog already replaced this connection
+          connect().catch((e) => console.error(`[${number}] reconnect failed:`, e.message));
+        }, conflict ? Math.min(300000, 30000 * retry) : Math.min(30000, 3000 * retry));
       }
     });
 
@@ -667,6 +721,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
 
   function stop() {
     stopped = true;
+    clearInterval(watchdog);
     open = false;
     const s = current;
     current = null;
