@@ -16,6 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const heavy = require('./limit').run; // limits how many yt-dlp / ffmpeg jobs run at once
+const heal = (() => { try { return require('./selfheal'); } catch { return null; } })(); // optional: the bot works without it
 
 const MAX_MB = 40;
 const UA = 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36';
@@ -33,6 +34,19 @@ const PROVIDERS = [
 
 const dead = new Map(); // site name -> skipped until this time
 let lastGood = null; // the site that worked last is tried first
+
+// live fixes: selfheal.js reads sources.json from GitHub and hands the music list here (no redeploy needed)
+const BUILTIN = PROVIDERS.slice();
+function fromRemote(r) {
+  if (r.get) return { name: r.name, get: (u) => r.get.replace('{u}', enc(u)) };
+  return { name: r.name, post: r.post, form: (u) => Object.fromEntries(Object.entries(r.form).map(([k, v]) => [k, String(v).replace('{u}', u)])) };
+}
+if (heal) {
+  heal.onConfig('music', (list, disabled = []) => {
+    const base = list ? list.map(fromRemote) : BUILTIN;
+    PROVIDERS.splice(0, PROVIDERS.length, ...base.filter((p) => !disabled.includes(p.name)));
+  });
+}
 
 /* ---------- finding the download link in whatever the site answers ---------- */
 const WANT = /(download|dl|mp3|audio|link|url)/i;
@@ -74,25 +88,31 @@ async function downloadAudio(link) {
   return buf;
 }
 
+const isDown = (e) => /ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|Timeout|aborted|fetch failed|HTTP (5\d\d|403|404|429)/i.test(String(e.cause?.code || '') + ' ' + e.message);
+
 /** step 1: the free sites. Returns an mp3 buffer or throws. */
 async function freeAudio(v, toMp3) {
   const now = Date.now();
   let list = PROVIDERS.filter((p) => (dead.get(p.name) || 0) < now);
   if (!list.length) list = PROVIDERS.slice(); // all marked dead: try them all again
-  list.sort((a, b) => (b.name === lastGood) - (a.name === lastGood));
+  if (heal) list = heal.rank(list, (p) => 'music:' + p.name); // the best source (by its real results) goes first
+  else list.sort((a, b) => (b.name === lastGood) - (a.name === lastGood));
   const deadline = now + 75000; // never wait more than about 75 seconds here
   const errs = [];
   for (const p of list) {
     if (Date.now() > deadline) break;
+    const t0 = Date.now();
     try {
       let buf = await downloadAudio(await linkFrom(p, v.url));
       if (!isMp3(buf)) { buf = await toMp3(buf); if (!isMp3(buf)) throw new Error('not audio'); } // m4a / webm -> mp3
       lastGood = p.name;
       dead.delete(p.name);
+      if (heal) heal.record('music:' + p.name, true, Date.now() - t0);
       return buf;
     } catch (e) {
-      dead.set(p.name, Date.now() + 10 * 60 * 1000);
-      errs.push(p.name + ': ' + (e.cause?.code || e.message));
+      if (heal) heal.record('music:' + p.name, false);
+      if (isDown(e)) dead.set(p.name, Date.now() + 10 * 60 * 1000); // only a site that is down is skipped, not one that failed for this song
+      errs.push(p.name + ': ' + String(e.cause?.code || e.message).slice(0, 50));
     }
   }
   throw new Error(errs.join(' | ').slice(0, 300) || 'no free source answered');
@@ -123,6 +143,15 @@ function soundcloud(query) {
 async function card(ctx, v) {
   const text = `🎵 *${v.title}*\n👤 ${v.author?.name || '-'}\n⏱ ${v.timestamp || '-'}\n🔗 ${v.url}`;
   if (v.thumbnail) await ctx.sendImage(v.thumbnail, text).catch(() => ctx.reply(text)); else await ctx.reply(text);
+}
+// sending to WhatsApp, with one more try; a failure here is NOT a download failure, so it is reported as what it is
+async function deliver(ctx, v, buf, asFile) {
+  try { await sendAudio(ctx, v, buf, asFile); }
+  catch (e1) {
+    await new Promise((r) => setTimeout(r, 2500));
+    try { await sendAudio(ctx, v, buf, asFile); }
+    catch (e2) { throw new Error('I got the song but could not send it to WhatsApp (' + String(e2.message || e1.message).slice(0, 80) + '). Please try again.'); }
+  }
 }
 async function sendAudio(ctx, v, buf, asFile) {
   const quoted = { quoted: ctx.msg };
@@ -156,12 +185,9 @@ function makeHandler(asFile) {
       // 1) free sites
       let freeErr = 'not tried';
       if (v) {
-        try {
-          const buf = await freeAudio(v, extra.toMp3);
-          await card(ctx, v);
-          await sendAudio(ctx, v, buf, asFile);
-          return;
-        } catch (e) { freeErr = e.message; console.log('[music] free sources failed:', freeErr); }
+        let buf = null;
+        try { buf = await freeAudio(v, extra.toMp3); } catch (e) { freeErr = e.message; console.log('[music] free sources failed:', freeErr); }
+        if (buf) { await card(ctx, v); await deliver(ctx, v, buf, asFile); return; }
       }
 
       // 2) the old method (Malvin API if set, then yt-dlp from YouTube)
@@ -175,11 +201,13 @@ function makeHandler(asFile) {
         try {
           const buf = await soundcloud(`${v.title} ${v.author?.name || ''}`);
           if (!o) await card(ctx, v); // the old method sends the card itself
-          await sendAudio(ctx, v, buf, asFile);
+          await deliver(ctx, v, buf, asFile);
           return;
         } catch (e2) {
+          if (/could not send it to WhatsApp/.test(e2.message)) throw e2;
+          if (heal) { heal.noteFailure('youtube', e1.message); heal.noteError(cmdName, e1); } // YouTube refusing the server again and again triggers a yt-dlp update
           const first = String(e1.message || '').replace(/\n- Download API: not set[^\n]*/g, '');
-          throw new Error(`${first}\n- Free sources: ${freeErr}\n- SoundCloud: ${e2.message}`.slice(0, 900));
+          throw new Error(`${first}\n- Free sources: ${freeErr}\n- SoundCloud: ${e2.message}\n\nOwner: send .health to see which sources work from this server.`.slice(0, 1100));
         }
       }
     } finally { react(''); }
@@ -193,4 +221,4 @@ function register(add) {
   add('song', 'Media', '<name or link>', 'Search a song and send it as a downloadable file', makeHandler(true), { aliases: ['mp3'] });
 }
 
-module.exports = { register, freeAudio, soundcloud, pickLink };
+module.exports = { register, freeAudio, soundcloud, pickLink, PROVIDERS, linkFrom };
