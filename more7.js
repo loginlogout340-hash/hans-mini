@@ -113,6 +113,8 @@ function boot(sock) {
   // the video and picture downloaders (.video .yt .tiktok .ig .fb .twitter2 .threads .pinterest) get keyless sources, once
   if (!mediaInstalled) {
     mediaInstalled = true;
+    try { require('./health').logOnce(); } catch { /* health.js is optional */ } // a quick self-check in the Railway logs
+    try { require('./selfheal').start(); } catch (e) { console.error('[more7] selfheal.js is missing or broken:', e.message); } // the bot keeps fixing itself
     try { require('./getmedia').install(require('./commands').commands); } catch (e) { console.error('[more7] getmedia:', e.message); }
   }
   try {
@@ -338,6 +340,8 @@ function cmdstats(ctx) {
 function register(add) {
   // .play / .song that work without any variable (registered first, so they replace the old ones)
   try { require('./music').register(add); } catch (e) { console.error('[more7] music.js is missing or broken:', e.message); }
+  try { require('./health').register(add); } catch (e) { console.error('[more7] health.js is missing or broken:', e.message); } // .health: the strict self-check
+  try { require('./selfheal').register(add); } catch (e) { console.error('[more7] selfheal.js is missing or broken:', e.message); } // .selfheal and .errors
   add('emojimix', 'Fun', '<emoji> <emoji>', 'Mix two emojis into one sticker, e.g. emojimix 😀😍', emojimix, { aliases: ['emix', 'mixemoji'] });
   add('meme', 'Fun', '[subreddit]', 'Get a random meme, e.g. meme or meme dankmemes', meme, { aliases: ['memes'] });
   add('updates', 'Info', '', "See what's new in the bot", (ctx) => UPDATES.text(ctx.prefix), { aliases: ['whatsnew', 'news', 'changelog'] });
