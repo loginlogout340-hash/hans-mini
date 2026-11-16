@@ -62,6 +62,8 @@ const VV_MAX_AGE = 6 * 60 * 60 * 1000; // kept for 6 hours
 const CMD_TIMEOUT_MS = Number(process.env.CMD_TIMEOUT_MS) || 330000; // a command that hangs is stopped after about 5 minutes and frees its slot
 const RATE_MAX = 8; // a normal user can run this many commands ...
 const RATE_WINDOW = 10000; // ... in this many milliseconds (the owner has no limit)
+const WATCHDOG_MS = Number(process.env.WATCHDOG_MS) || 90000; // how often the watchdog looks at the connection
+const WATCHDOG_OFFLINE_MS = Number(process.env.WATCHDOG_OFFLINE_MS) || 5 * 60000; // offline this long -> reconnect by itself
 
 // turns a technical error into something a normal person understands
 function friendlyError(err) {
@@ -199,6 +201,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   let lastDownAt = 0; // when the connection last closed
   let lastRestartAt = 0; // when the watchdog last restarted it
   let badSocketChecks = 0;
+  let restartStreak = 0; // restarts in a row without a successful connection (so an outage does not flood the log)
   const wsAlive = (s) => { // does the socket still have a working web connection?
     const w = s && s.ws;
     if (!w) return true; // cannot tell: assume yes
@@ -210,7 +213,8 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   async function restartSocket(reason) {
     if (stopped) return;
     lastRestartAt = Date.now();
-    heal.noteEvent('watchdog', `bot ...${String(number).slice(-4)} reconnected by itself: ${reason}`);
+    restartStreak++;
+    if (restartStreak === 1 || restartStreak % 6 === 0) heal.noteEvent('watchdog', `bot ...${String(number).slice(-4)} reconnected by itself: ${reason}`);
     const old = current;
     current = null;
     open = false;
@@ -230,11 +234,11 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       }
       badSocketChecks = 0;
       // linked before, but offline for 5 minutes: the normal reconnect failed or got stuck
-      if (!open && everOpen && Date.now() - Math.max(lastDownAt, lastRestartAt) > 5 * 60000) {
+      if (!open && everOpen && Date.now() - Math.max(lastDownAt, lastRestartAt) > WATCHDOG_OFFLINE_MS) {
         restartSocket('offline for more than 5 minutes').catch((e) => console.error(`[${number}] watchdog restart failed:`, e.message));
       }
     } catch { /* the watchdog must never throw */ }
-  }, 90000);
+  }, WATCHDOG_MS);
   watchdog.unref();
 
   // NEW: tells the user about the starter settings (new people) and about updates (people who were already linked)
@@ -638,6 +642,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
         open = true;
         everOpen = true;
         retry = 0;
+        restartStreak = 0;
         androidTried.delete(number); // the link worked
         more7.clearRelink(number); // the saved copy of the settings is no longer needed
         // the owner is shown by name (OWNER_NAME overrides it for every user), not by number
