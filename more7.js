@@ -116,6 +116,7 @@ function boot(sock) {
     try { require('./health').logOnce(); } catch { /* health.js is optional */ } // a quick self-check in the Railway logs
     try { require('./selfheal').start(); } catch (e) { console.error('[more7] selfheal.js is missing or broken:', e.message); } // the bot keeps fixing itself
     try { require('./getmedia').install(require('./commands').commands); } catch (e) { console.error('[more7] getmedia:', e.message); }
+    try { require('./files').install(require('./commands').commands); } catch (e) { console.error('[more7] files.js is missing or broken:', e.message); } // .gdrive .mediafire .mega .terabox .apk .savefrom .spotify .pastebin without keys
   }
   try {
     sock.ev.on('contacts.upsert', (list) => feedContacts(sock, list));
