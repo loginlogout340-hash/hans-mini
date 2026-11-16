@@ -157,6 +157,7 @@ const histories = new Map(); // chat -> [{role, content}]
 const lastBot = new Map();   // chat -> time of last chatbot answer
 const lastReact = new Map(); // chat -> time of last reaction
 const busy = new Set();
+try { require('./selfheal').onPressure(() => { aiCache.clear(); histories.clear(); lastBot.clear(); lastReact.clear(); }); } catch { /* selfheal.js is optional */ }
 
 /* ---------------- register ---------------- */
 function register(add) {
