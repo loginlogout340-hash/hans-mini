@@ -72,8 +72,9 @@ function saveStats() {
 /** a source was tried: did it work, and how long did it take */
 function record(key, ok, ms = 0) {
   const s = (stats[key] ||= { ok: 0, fail: 0, ms: 0, last: 0, lastOk: 0, streak: 0 });
-  if (ok) { s.ok++; s.streak = 0; s.lastOk = Date.now(); s.ms = s.ms ? Math.round(s.ms * 0.7 + ms * 0.3) : ms; }
-  else { s.fail++; s.streak++; }
+  // recent results count most: a source that works again is forgiven quickly, one that starts failing is noticed quickly
+  if (ok) { s.ok++; s.fail = Math.floor(s.fail / 2); s.streak = 0; s.lastOk = Date.now(); s.ms = s.ms ? Math.round(s.ms * 0.7 + ms * 0.3) : ms; }
+  else { s.fail++; s.ok = Math.ceil(s.ok * 0.85); s.streak++; }
   s.last = Date.now();
   if (s.ok + s.fail > 60) { s.ok = Math.round(s.ok / 2); s.fail = Math.round(s.fail / 2); } // old history fades, so a source that died is noticed fast
   dirty = true;
@@ -210,7 +211,7 @@ function memCheck() {
 }
 
 /* ============================== 7. the report to the admin ============================== */
-let lastDigest = Date.now();
+let lastDigest = Date.now() - 6 * 3600000 + 30 * 60000; // the first report can go out 30 minutes after the start, then at most every 6 hours
 function digest() {
   const fresh = events.filter((e) => e.t > lastDigest && NOTABLE.has(e.kind));
   if (!fresh.length || Date.now() - lastDigest < 6 * 3600000) return false;
