@@ -64,6 +64,9 @@ async function serverLines() {
   const [yt, ff] = await Promise.all([run('yt-dlp', ['--version']), run('ffmpeg', ['-version'])]);
   lines.push(yt.err ? '❌ yt-dlp is missing (downloads from YouTube and many sites will fail)' : `✅ yt-dlp ${yt.out.split('\n')[0]}`);
   lines.push(ff.err ? '❌ ffmpeg is missing (stickers, audio and video conversion will fail)' : `✅ ffmpeg ${(ff.out.match(/version (\S+)/) || [])[1] || ''}`.trim());
+  let mega = true;
+  try { require.resolve('megajs'); } catch { mega = false; }
+  lines.push(mega ? '✅ megajs installed (.mega works)' : '🟡 megajs is not installed (.mega will not work; check package.json)');
   let mixer = true;
   try { require.resolve('emoji-mixer'); } catch { mixer = false; }
   lines.push(mixer ? '✅ emoji-mixer installed' : '🟡 emoji-mixer is not installed (.emojimix will not work; check package.json)');
@@ -147,7 +150,7 @@ async function youtubeProbe() {
 /* ---------------------------- the report ---------------------------- */
 const line = (r) => `${r.icon} ${r.text}`;
 const score = (list) => `${list.filter((r) => r.icon === '✅').length}/${list.length}`;
-const PLATFORM_NAMES = { tiktok: 'TikTok', twitter: 'X (Twitter)', instagram: 'Instagram', facebook: 'Facebook', pinterest: 'Pinterest', threads: 'Threads', youtube: 'YouTube video' };
+const PLATFORM_NAMES = { terabox: 'TeraBox', tiktok: 'TikTok', twitter: 'X (Twitter)', instagram: 'Instagram', facebook: 'Facebook', pinterest: 'Pinterest', threads: 'Threads', youtube: 'YouTube video' };
 
 async function collect(full) {
   const [server, wa, ai, music, media, yt] = await Promise.all([
@@ -158,12 +161,18 @@ async function collect(full) {
     mediaProbes(),
     full ? youtubeProbe() : Promise.resolve(null),
   ]);
-  const meme = await reach('Meme service', 'https://meme-api.com/gimme');
-  return { server, net: [wa, ai, meme], music, media, yt };
+  const [meme, apk, mf, gd, pb] = await Promise.all([
+    reach('Meme service', 'https://meme-api.com/gimme'),
+    reach('Aptoide (.apk)', 'https://ws75.aptoide.com/api/7/apps/search?query=a&limit=1'),
+    reach('MediaFire', 'https://www.mediafire.com/'),
+    reach('Google Drive', 'https://drive.usercontent.google.com/'),
+    reach('Pastebin', 'https://pastebin.com/'),
+  ]);
+  return { server, net: [wa, ai, meme, apk, mf, gd, pb], music, media, yt };
 }
 
 function format(rep, full) {
-  const out = [`🩺 *Hans-Mini health* v${UPDATES.version}`, '', '🖥️ *Server*', ...rep.server.map((l) => (/^[✅❌🟡]/.test(l) ? l : '• ' + l)), '', '🌐 *Network*  ' + rep.net.map(line).join('  ·  ')];
+  const out = [`🩺 *Hans-Mini health* v${UPDATES.version}`, '', '🖥️ *Server*', ...rep.server.map((l) => (/^[✅❌🟡]/.test(l) ? l : '• ' + l)), '', '🌐 *Network*', ...rep.net.map(line)];
   out.push('', `🎵 *Music sources* (${score(rep.music)} work)`, ...rep.music.map(line));
   out.push('', '🎬 *Video and picture sources*');
   for (const [k, list] of Object.entries(rep.media)) out.push(`${PLATFORM_NAMES[k] || k} (${score(list)}): ` + list.map((r) => `${r.icon}${r.text.split(' ')[0]}${r.icon === '✅' ? '' : r.text.slice(r.text.indexOf(' '))}`).join(' · '));
