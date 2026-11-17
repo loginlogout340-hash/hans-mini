@@ -1,4 +1,4 @@
-# Hans-Mini  (v2.1.0)
+# Hans-Mini  (v3.2.0)
 by 𝙷𝚊𝚗𝚜𝚘𝚗 ✪
 
 A multi-user WhatsApp bot with **170+ commands**, built on Baileys. Visitors open the pairing website, type their number, get a code, link WhatsApp, and the bot is theirs. No setup, no coding, no Railway account needed on their side.
