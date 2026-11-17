@@ -157,6 +157,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   let retry = 0;
   let forward = null;
   let download = null;
+  let downloadPart = null; // NEW: streams one media part (the second way to download a view-once item)
   const store = new Map();
   const groupCache = new Map();
   const rate = new Map(); // NEW: sender -> times of their recent commands
@@ -310,9 +311,18 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   }
   const vvList = (chat) => { vvLoad(); return [...vvIndex.values()].filter((m) => !chat || m.chat === chat).sort((a, b) => b.t - a.t); };
 
-  // one download, with one more try if the first one fails
-  async function downloadRetry(m) {
-    try { return await download(m); } catch { await sleep(1500); return download(m); }
+  // downloads a view-once item. Two different ways, and a second round after a short pause, because one way sometimes
+  // works when the other does not (the idea comes from how FEE-XMD retrieves view-once media: it streams the part itself)
+  async function downloadAny(m, part, kind) {
+    const ways = [() => download(m), () => (downloadPart ? downloadPart(part, kind) : Promise.reject(new Error('no stream download')))];
+    let last;
+    for (let round = 0; round < 2; round++) {
+      for (const way of ways) {
+        try { const b = await way(); if (b && b.length) return b; } catch (e) { last = e; }
+      }
+      if (round === 0) await sleep(1500);
+    }
+    throw last || new Error('the download gave nothing');
   }
 
   // save a view-once message right when it arrives
@@ -330,25 +340,44 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
         if (identity !== 'android' && !msg.key.fromMe && Date.now() - lastVvNudge > 24 * 60 * 60 * 1000 && current) {
           lastVvNudge = Date.now();
           current.sendMessage(ownerJid(), { text: `👁️ A view-once message just arrived, but WhatsApp did not give it to your bot.\nSend ${config.prefix}fixviewonce to fix this (you link your number again once, and your settings are kept).` }).catch(() => {});
-        }
+        } else if (config.antiViewOnce && !msg.key.fromMe && current) tellOwnerMissing(msg);
         return;
       }
-      const buffer = await downloadRetry(msg);
+      const buffer = await downloadAny(msg, part, kind);
       if (!buffer || !buffer.length || buffer.length > VV_MAX_BYTES) return;
       vvPut({
         id: msg.key.id, t: Date.now(), kind, caption: part.caption || '', mimetype: part.mimetype || '', ptt: !!part.ptt,
         chat: msg.key.remoteJid, from: digits(msg.key.participant || msg.key.remoteJid), name: msg.pushName || '', size: buffer.length,
       }, buffer);
       log('view-once ' + kind + ' saved in the vault (' + Math.round(buffer.length / 1024) + ' KB)');
-    } catch (e) { log('could not save view-once:', e.message); }
+      if (config.antiViewOnce && !msg.key.fromMe && current) await forwardToOwner(msg, vvGet(msg.key.id)); // anti view-once: sent to you at once
+    } catch (e) {
+      log('could not save view-once:', e.message);
+      if (config.antiViewOnce && !msg.key.fromMe && current) tellOwnerMissing(msg);
+    }
+  }
+
+  // anti view-once: the saved item goes to your own chat with who sent it and where (one message per item)
+  function viewOnceHeader(msg) {
+    const where = String(msg.key.remoteJid || '').endsWith('@g.us') ? 'a group' : 'a private chat';
+    return `👁️ *View-once message*\nFrom: ${msg.pushName || ''} (+${digits(msg.key.participant || msg.key.remoteJid)})\nIn: ${where}`;
+  }
+  async function forwardToOwner(msg, hit) {
+    if (!hit) return;
+    const who = msg.key.participant || msg.key.remoteJid;
+    try { await sendSaved(current, ownerJid(), hit, viewOnceHeader(msg), /@/.test(who || '') ? [who] : []); }
+    catch (e) { log('could not send the view-once item to the owner:', e.message); }
+  }
+  function tellOwnerMissing(msg) {
+    current.sendMessage(ownerJid(), { text: viewOnceHeader(msg) + '\n\n(the media could not be recovered)' }).catch(() => {});
   }
 
   // send a saved view-once item to a chat
-  async function sendSaved(sock, to, hit, header = '') {
+  async function sendSaved(sock, to, hit, header = '', mentions = []) {
     const cap = [header, hit.caption].filter(Boolean).join('\n\n');
-    if (hit.kind === 'image') return sock.sendMessage(to, { image: hit.buffer, caption: cap });
-    if (hit.kind === 'video') return sock.sendMessage(to, { video: hit.buffer, caption: cap });
-    if (header) await sock.sendMessage(to, { text: header });
+    if (hit.kind === 'image') return sock.sendMessage(to, { image: hit.buffer, caption: cap, mentions });
+    if (hit.kind === 'video') return sock.sendMessage(to, { video: hit.buffer, caption: cap, mentions });
+    if (header) await sock.sendMessage(to, { text: header, mentions });
     return sock.sendMessage(to, { audio: hit.buffer, mimetype: hit.mimetype || 'audio/ogg; codecs=opus', ptt: !!hit.ptt });
   }
 
@@ -560,12 +589,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
         catch { await sock.sendMessage(ownerJid(), { text: header + '\n\n(the media could not be recovered)' }); }
         return;
       }
-      // someone sent a view-once message
-      if (config.antiViewOnce && !msg.key.fromMe && isViewOnce(msg.message)) {
-        const header = `👁️ *View-once message*\nFrom: ${msg.pushName || ''} (+${digits(msg.key.participant || msg.key.remoteJid)})\nIn: ${where}`;
-        try { await forward(sock, ownerJid(), msg, header); }
-        catch { await sock.sendMessage(ownerJid(), { text: header + '\n\n(the media could not be recovered)' }); }
-      }
+      // anti view-once is handled in saveViewOnce(): the item is saved once and sent to you from the vault
     } catch (e) { console.error(`[${number}] watcher error:`, e.message); }
   }
 
@@ -634,6 +658,11 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       sock.hm.save();
     }
     download = (m) => B.downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+    downloadPart = async (part, kind) => { // NEW: the media part is streamed straight from WhatsApp (the way FEE-XMD does it)
+      const chunks = [];
+      for await (const c of await B.downloadContentFromMessage(part, kind)) chunks.push(c);
+      return Buffer.concat(chunks);
+    };
     forward = makeForwarder(download);
 
     sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
