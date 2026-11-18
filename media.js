@@ -1,10 +1,11 @@
 'use strict';
 /**
  * Message helpers shared by bot.js (and the other files):
- *   unwrap(message)          -> the real message content (removes ephemeral / view-once / edited wrappers)
- *   getText(message)         -> the text or caption of a message ('' if none)
- *   isViewOnce(message)      -> true when the message is a view-once picture, video or voice note
- *   makeForwarder(download)  -> async (sock, to, msg, header) that re-sends any message (also media) to a chat
+ *   unwrap(message)             -> the real message content (removes ephemeral / view-once / edited wrappers)
+ *   getText(message)            -> the text or caption of a message ('' if none)
+ *   isViewOnce(message)         -> true when the message is a view-once picture, video or voice note
+ *   makeForwarder(download)     -> async (sock, to, msg, header) that re-sends any message (also media) to a chat
+ *   relayViewOnce(sock, to, msg, extra)  -> NEW: a last-resort way to hand off a view-once item (see below)
  */
 
 const WRAPPERS = [
@@ -121,4 +122,48 @@ function makeForwarder(download) {
   };
 }
 
-module.exports = { unwrap, getText, isViewOnce, makeForwarder };
+/**
+ * relayViewOnce(sock, to, msg, extra) - a different, LAST-RESORT way to hand off a view-once item.
+ *
+ * Everywhere else in this file, "forward" means: this server downloads the media into a buffer, then
+ * uploads that buffer again as a new message. That needs the server to successfully fetch the media
+ * itself, which is exactly what fails when WhatsApp withholds a view-once item from this linked device.
+ *
+ * relayViewOnce never downloads anything. It takes the view-once message exactly as this device received
+ * it, removes only the "view once" flag, and hands the resulting message straight to Baileys' own relay
+ * step (generateForwardMessageContent + relayMessage) so WhatsApp delivers it to the new chat the normal
+ * way - the same thing that happens whenever any message is forwarded on a phone. The receiving chat's own
+ * device ends up doing the fetching, not this server.
+ *
+ * This can occasionally succeed when the normal download fails for a reason specific to this server (a
+ * network hiccup, a media-host quirk), but it cannot invent a media reference that was never there: when
+ * WhatsApp withheld the item entirely (no mediaKey, no directPath, no url on the message this device got -
+ * the case bot.js already detects and reports as "WhatsApp does not send view-once pictures to the way
+ * your bot is linked"), there is nothing here to relay either, and this throws the same way the normal
+ * download does. It is tried as one extra, cheap attempt - never a replacement for linking the bot the way
+ * that lets WhatsApp hand over the media in the first place (see .fixviewonce).
+ */
+async function relayViewOnce(sock, to, msg, extra = {}) {
+  const baileys = await import('@whiskeysockets/baileys');
+  const B = baileys.default && (baileys.default.generateForwardMessageContent || baileys.default.default) ? baileys.default : baileys;
+
+  // find the viewOnce wrapper and the picture/video/voice-note part inside it
+  let node = msg.message;
+  for (const w of WRAPPERS) { if (node?.[w]?.message) { node = node[w].message; break; } }
+  const vwrap = node?.viewOnceMessage || node?.viewOnceMessageV2 || node?.viewOnceMessageV2Extension;
+  const plain = vwrap?.message;
+  const kind = plain && Object.keys(plain)[0];
+  if (!kind || !plain[kind]) throw new Error('this is not a view-once message');
+  const part = plain[kind];
+  if (!part.mediaKey && !part.directPath && !part.url) throw new Error('WhatsApp did not give this device a media reference for it');
+
+  const stripped = { ...plain, [kind]: { ...part, viewOnce: false } };
+  const content = B.generateForwardMessageContent({ key: msg.key, message: stripped }, false);
+  const type = B.getContentType(content);
+  if (extra.caption) content[type].caption = extra.caption;
+  if (extra.mentions?.length) content[type].contextInfo = { ...(content[type].contextInfo || {}), mentionedJid: extra.mentions };
+  const wa = B.generateWAMessageFromContent(to, content, {});
+  await sock.relayMessage(to, wa.message, { messageId: wa.key.id });
+}
+
+module.exports = { unwrap, getText, isViewOnce, makeForwarder, relayViewOnce };
