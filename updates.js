@@ -4,7 +4,7 @@
  * When you publish a new update: change `version` and `notes`. Every user who was already linked gets
  * the notes once, in their own chat, the next time their bot connects. They can read them again with .updates
  */
-const version = '3.3.0';
+const version = '3.4.0';
 
 const notes = [
   '📥 *Everything downloads without keys now*',
@@ -19,6 +19,9 @@ const notes = [
   '🛡️ *Also*: Hanson works again, real error reasons are shown, mistyped commands get a hint, flooding is slowed down.',
   '',
   '👁️ *View-once*: saved for 6 hours ({p}vvlist, {p}vvget, {p}retrieve). With {p}antiviewonce on, each one is sent to your own chat at once, with who sent it and where. Two ways of downloading are tried. WhatsApp only sends view-once pictures to bots linked the new way: send {p}fixviewonce, then {p}fixviewonce confirm.',
+  '',
+  '',
+  '📣 *Admin*: {p}relinkall messages every user who is still on the old WhatsApp link with clear steps to fix view-once, so people stop hitting the error by surprise.',
   '',
   '*Earlier:* {p}emojimix, {p}meme, {p}textall, {p}updates and starter settings for new users.',
 ];
