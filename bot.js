@@ -12,7 +12,7 @@ const path = require('path');
 const pino = require('pino');
 const { commands } = require('./commands');
 const extra = require('./extra');
-const { unwrap, getText, isViewOnce, makeForwarder } = require('./media');
+const { unwrap, getText, isViewOnce, makeForwarder, relayViewOnce } = require('./media');
 const ui = require('./ui');
 const statusMod = require('./status'); // NEW: auto view / auto like status logic
 const moreFive = require('./more5');
@@ -174,8 +174,13 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     const canAndroid = typeof B.Browsers?.android === 'function';
     if (config.identity === 'android') return canAndroid ? 'android' : 'web';
     if (config.identity === 'web') return 'web';
-    // never decided before: someone who is already linked keeps the normal way (they must link again to change it)
-    if (fs.existsSync(path.join(config.sessionDir, 'creds.json'))) return 'web';
+    // CHANGED: a brand-new sign-up (no saved identity at all) links the proven way, not android.
+    // Pairing on the android identity turned out to fail far more often on the very first code - a
+    // problem in WhatsApp's own linking step, outside this bot's control - so it is no longer the
+    // default for someone's very first link. 'try-android' is set only by .fixviewonce (more7.js),
+    // for a person who already has a working bot and is deliberately upgrading for view-once.
+    if (config.identity !== 'try-android') return 'web';
+    if (fs.existsSync(path.join(config.sessionDir, 'creds.json'))) return 'web'; // already linked: keep it
     if (!canAndroid || webOnly.has(number)) return 'web';
     const t = androidTried.get(number);
     if (t && Date.now() - t < ANDROID_RETRY_MS) return 'web'; // the last android try did not finish
@@ -529,6 +534,13 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
           return await forward(sock, to, { key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage }, header);
         } catch (e) {
           if (isViewOnce(ctxInfo.quotedMessage)) {
+            // NEW: one more, cheap try - hand the item straight to WhatsApp's own relay step instead of
+            // downloading it on this server (see media.js). Only helps when WhatsApp still gave this
+            // device a media reference for it; does nothing for the "withheld entirely" case below.
+            try {
+              await relayViewOnce(sock, to, { key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage }, { caption: header, mentions: ctxInfo.participant ? [ctxInfo.participant] : [] });
+              return;
+            } catch { /* falls through to the messages below */ }
             if (config.identity !== 'android') {
               throw new Error(`WhatsApp does not send view-once pictures to the way your bot is linked. Send ${usedPrefix}fixviewonce to fix it (you link your number again once).`);
             }
@@ -695,6 +707,19 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
           Promise.resolve(onLoggedOut && onLoggedOut()).catch((e) => console.error(`[${number}] logout cleanup failed:`, e.message));
           return;
         }
+        // NEW: code 515 is not a failure. WhatsApp sends it on purpose, once, right after a phone
+        // approves a pairing code (or a QR scan): "your login just changed, close and reconnect to use
+        // it." The pairing code itself already worked; this reconnect is what actually finishes the
+        // link. It happens immediately, every time, by design - so it skips the normal backoff and does
+        // not count as a failed attempt, and the person on the phone never needs a second code for it.
+        if (code === B.DisconnectReason.restartRequired) {
+          log('restarting the connection to finish linking (this is normal, not an error)');
+          setTimeout(() => {
+            if (stopped || current !== sock) return;
+            connect().catch((e) => console.error(`[${number}] reconnect failed:`, e.message));
+          }, 250);
+          return;
+        }
         retry++;
         // code 440: the same login is open somewhere else (for example an old copy of the bot is still running).
         // Reconnecting at once would start a fight with it, so wait much longer.
@@ -731,13 +756,34 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   }
 
   async function requestPairingCode() {
+    // NEW: waits for the raw connection to WhatsApp's server to actually be up, instead of guessing a
+    // fixed pause. A fixed pause is a guess that can be too short on a slow start (a cold Railway
+    // container, a slow network) - asking for a code before the connection is really ready is one more
+    // way the very first code can come back broken, on either identity.
+    async function waitReady(maxMs) {
+      const until = Date.now() + maxMs;
+      while (Date.now() < until) {
+        if (!current || stopped) return;
+        if (wsAlive(current)) return;
+        await sleep(200);
+      }
+    }
     const ask = async () => {
       if (!current) throw new Error('The bot is not ready yet. Try again.');
       const creds = current.authState.creds;
       if (creds.registered || creds.me) throw new Error('This number is already linked.');
-      await sleep(3000); // the connection needs a moment before WhatsApp accepts the request
+      await waitReady(15000);
       if (!current || stopped) throw new Error('The connection was closed. Try again.');
-      return current.requestPairingCode(number);
+      try {
+        return await current.requestPairingCode(number);
+      } catch (e) {
+        // NEW: one quiet retry for anything other than "already linked" - a request made the moment the
+        // connection comes up can still land a beat too early; trying again almost always works.
+        if (/already linked/i.test(e.message)) throw e;
+        await sleep(2000);
+        if (!current || stopped) throw new Error('The connection was closed. Try again.');
+        return current.requestPairingCode(number);
+      }
     };
     try {
       const code = await ask();
