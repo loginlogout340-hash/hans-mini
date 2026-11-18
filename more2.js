@@ -248,6 +248,24 @@ function register(add) {
     return `📢 Sending to ${numbers.length} user(s), one by one. I will tell you when it is done.`;
   }, { owner: true, aliases: ['bc', 'announce'] });
 
+  add('relinkall', 'Admin', '', "Message every user still on the old WhatsApp link with clear steps to fix view-once", async (ctx) => {
+    const m = guard(ctx);
+    const me = num(ctx.config.owners[0]);
+    const targets = m.users().filter((u) => u.linked && u.identity !== 'android' && String(u.number) !== me);
+    if (!targets.length) return '✅ Everyone is already linked the new way. Nobody needs to relink.';
+    const sock = ctx.sock, back = ctx.jid, p = ctx.prefix;
+    (async () => {
+      let sent = 0, fail = 0;
+      for (const u of targets) {
+        const text = `👁️ *A fix for view-once pictures*\n\nWhatsApp only sends view-once pictures and videos to bots linked a newer way. Your bot is still on the old link, so ${p}retrieve cannot get view-once messages yet.\n\nTo fix it, whenever you have a minute:\n1. Send *${p}fixviewonce*\n2. Send *${p}fixviewonce confirm*\n\nYour settings are kept. It takes about a minute, and you only need to do this once.`;
+        try { await sock.sendMessage(u.number + '@s.whatsapp.net', { text }); sent++; } catch { fail++; }
+        await sleep(2000 + Math.random() * 2000); // slow on purpose, so WhatsApp does not flag the account
+      }
+      await sock.sendMessage(back, { text: `✅ View-once notice sent to ${sent} user(s)${fail ? `, ${fail} failed` : ''}.` }).catch(() => {});
+    })();
+    return `📣 Messaging ${targets.length} user(s) who are still on the old link, one by one. I will tell you when it is done.\n\nThis only sends instructions; nobody is unlinked. Each user still has to send *${p}fixviewonce confirm* themselves, because WhatsApp requires the phone owner to approve any new device link - no bot can skip that step.`;
+  }, { owner: true, aliases: ['notifyrelink', 'viewoncefix'] });
+
   add('msguser', 'Admin', '<number> <message>', 'Send a message to one user of your bot', async (ctx) => {
     const m = guard(ctx);
     const n = (ctx.args[0] || '').replace(/\D/g, '');
