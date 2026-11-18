@@ -156,11 +156,14 @@ async function restoreAll() {
 
 const stats = () => ({ users: countUsers(), max: MAX_USERS });
 
-/* ---------- admin tools (used by the admin commands in admin.js) ---------- */
+/* ---------- admin tools (used by the admin commands in admin.js and more2.js) ---------- */
 const isAdmin = (n) => !!ADMIN && String(n) === ADMIN;
 function users() {
   return [...bots.entries()].map(([number, e]) => ({
     number, name: e.bot.config.ownerName || '', online: e.bot.isOpen(), linked: e.bot.everOpen(),
+    // NEW: 'android' (view-once pictures can be received) or 'web' (the old way; needs .fixviewonce). Missing
+    // on a bot that has not connected even once since this was added, so that case is also treated as 'web'.
+    identity: e.bot.config.identity || 'web',
     commands: e.bot.stats.commands, lastActive: e.bot.stats.lastActive, since: e.bot.stats.since,
   }));
 }
