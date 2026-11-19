@@ -1,6 +1,8 @@
   '📣 *Admin*: {p}relinkall messages every user who is still on the old WhatsApp link with clear steps to fix view-once, so people stop hitting the error by surprise.',
   '',
-  '🔗 *Pairing, fixed twice more*: the brief disconnect WhatsApp sends right after a code is approved now finishes instantly instead of pausing a few seconds, and a pairing code is only requested once the connection is actually ready, with one quiet retry if it still needs it - both were ways a first code could look like it failed even though nothing was really wrong. {p}fixviewonce still upgrades a number to the way view-once needs, one time, for anyone who wants it. {p}retrieve also tries one extra, cheap way to hand off a view-once item before giving up.',
+  '🔗 *The real pairing fix*: linking was pinned to an unstable, pre-release build of the WhatsApp library (npm\'s "latest" tag currently points at one), which has an open, unresolved bug causing exactly this: a code is issued, the phone says "Couldn\'t link device", and the connection is rejected right away. The bot now uses a specific, stable release instead. The earlier timing fixes stay in place too; they were real improvements, just not the main cause.',
+  '',
+  '🛠️ *Correction on {p}fixviewonce*: it does relink the number, but the "android" identity it was meant to switch to turns out not to exist in the WhatsApp library this bot actually uses - so it has not been changing anything beyond a normal relink. True view-once support through that route is not available right now; this will stay honest about that until there is a real way to do it.',
   '',
 'use strict';
 /**
@@ -8,7 +10,7 @@
  * When you publish a new update: change `version` and `notes`. Every user who was already linked gets
  * the notes once, in their own chat, the next time their bot connects. They can read them again with .updates
  */
-const version = '3.6.0';
+const version = '3.7.0';
 
 const notes = [
   '📥 *Everything downloads without keys now*',
