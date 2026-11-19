@@ -171,6 +171,11 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
 
   // NEW: which identity this number connects with
   function pickIdentity(B) {
+    // CORRECTION: Browsers.android is not a real, documented part of the official @whiskeysockets/baileys
+    // package Hans-Mini installs - it only exists in some unofficial forks. So canAndroid is false on a
+    // normal install, every call below falls through to 'web', and this never actually links as android
+    // right now. Left in place (harmless) in case a future, official Baileys release adds a real android
+    // identity; .fixviewonce currently does nothing more than relink the number the normal way.
     const canAndroid = typeof B.Browsers?.android === 'function';
     if (config.identity === 'android') return canAndroid ? 'android' : 'web';
     if (config.identity === 'web') return 'web';
