@@ -14,7 +14,7 @@
  * createVault(dir) gives one user's bot a small disk-backed store: a view-once picture, video or voice
  * note is saved the moment it arrives, before it is ever opened, and stays there for a few hours - even
  * across a restart. .retrieve, .vvlist, .vvget and a sticker bound with .stickcmd to .retrieve all read
- * from this same store, so they.js all work the same way for every user.
+ * from this same store, so they all work the same way for every user.
  *
  * bot.js calls:
  *   createVault(dir)                                    once, when a user's bot is created
