@@ -644,7 +644,7 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
           // NEW: keep a copy of every fresh view-once message (so retrieve still works after it is opened)
           if (msg.message && isViewOnce(msg.message)) {
             const ts = Number(String(msg.messageTimestamp || 0));
-            if (!ts || Date.now() / 1000 - ts < 600) saveViewOnce(msg);
+            if (!ts || Date.now() / 1000 - ts < 600) saveViewOnce(sock, msg);
           }
           if (type !== 'notify') continue;
           watchers(sock, msg).catch((e) => console.error(`[${number}] watcher error:`, e.message));
