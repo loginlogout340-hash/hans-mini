@@ -4,9 +4,11 @@
  * When you publish a new update: change `version` and `notes`. Every user who was already linked gets
  * the notes once, in their own chat, the next time their bot connects. They can read them again with .updates
  */
-const version = '3.8.0';
+const version = '3.9.2';
 
 const notes = [
+  '🤖 *{p}antibot*: a group command that detects and removes other WhatsApp bots. {p}antibot on kick to remove automatically, {p}antibot on warn (the default) to just delete the message and point it out, {p}antibot on mute to silence instead of removing, {p}antibot add <number> for a block list that is always removed on sight. {p}antibot mute / unmute <number> works on its own too, any time, whether or not antibot is turned on - once muted, that person\'s messages are deleted until unmuted. It never touches group admins, the owner, or its own messages, and only removes or mutes someone when it is itself a group admin.',
+  '',
   '👁️ *View-once, fixed for real this time*',
   '› {p}retrieve, {p}vvlist and {p}vvget now work the same for every user - no relinking, no special setup',
   '› A sticker bound with {p}stickcmd to {p}retrieve works the same way',
@@ -23,6 +25,8 @@ const notes = [
   '🔧 *The bot fixes itself*: it learns which download sources work and tries the best first, updates yt-dlp, cleans up leftovers, reconnects a stuck connection, and reads live fixes from GitHub. The admin sees it all with {p}selfheal, {p}errors and {p}health.',
   '',
   '📣 *Admin*: {p}relinkall was for telling everyone to relink for view-once - no longer needed, since view-once just works now.',
+  '',
+  '🛡️ *Fixed*: a reply could get permanently stuck showing "Waiting for this message" on the other end. The bot now keeps a copy of everything it sends the instant it sends it, so it can resupply that content if WhatsApp ever needs to retry delivering it - before, that only worked by chance.',
   '',
   '🛡️ *Also*: Hanson works again, real error reasons are shown instead of vague ones, a mistyped command gets a "did you mean" hint, and flooding the bot is slowed down.',
   '',
