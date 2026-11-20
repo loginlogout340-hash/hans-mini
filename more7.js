@@ -118,6 +118,7 @@ function boot(sock) {
     try { require('./getmedia').install(require('./commands').commands); } catch (e) { console.error('[more7] getmedia:', e.message); }
     try { require('./files').install(require('./commands').commands); } catch (e) { console.error('[more7] files.js is missing or broken:', e.message); } // .gdrive .mediafire .mega .terabox .apk .savefrom .spotify .pastebin without keys
   }
+  try { require('./antibot').boot(sock); } catch (e) { console.error('[more7] antibot.js is missing or broken:', e.message); } // screens new joins against a group's block list
   try {
     sock.ev.on('contacts.upsert', (list) => feedContacts(sock, list));
     sock.ev.on('contacts.update', (list) => feedContacts(sock, list));
@@ -138,6 +139,7 @@ function passive(sock, m) {
     const pn = [m.key.remoteJidAlt, jid].find((j) => j && j.endsWith('@s.whatsapp.net')) || jid;
     if (addContact(sock, pn, m.key.fromMe ? '' : m.pushName)) sock.hm.save();
   } catch { /* never stops a message */ }
+  try { require('./antibot').passive(sock, m); } catch (e) { console.error('[more7] antibot.js passive:', e.message); } // checks every group message for a likely bot
 }
 
 /* ================================ textall =============================== */
@@ -326,6 +328,7 @@ function register(add) {
   try { require('./music').register(add); } catch (e) { console.error('[more7] music.js is missing or broken:', e.message); }
   try { require('./health').register(add); } catch (e) { console.error('[more7] health.js is missing or broken:', e.message); } // .health: the strict self-check
   try { require('./selfheal').register(add); } catch (e) { console.error('[more7] selfheal.js is missing or broken:', e.message); } // .selfheal and .errors
+  try { require('./antibot').register(add); } catch (e) { console.error('[more7] antibot.js is missing or broken:', e.message); } // .antibot
   add('emojimix', 'Fun', '<emoji> <emoji>', 'Mix two emojis into one sticker, e.g. emojimix 😀😍', emojimix, { aliases: ['emix', 'mixemoji'] });
   add('meme', 'Fun', '[subreddit]', 'Get a random meme, e.g. meme or meme dankmemes', meme, { aliases: ['memes'] });
   add('updates', 'Info', '', "See what's new in the bot", (ctx) => UPDATES.text(ctx.prefix), { aliases: ['whatsnew', 'news', 'changelog'] });
