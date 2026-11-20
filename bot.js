@@ -12,7 +12,8 @@ const path = require('path');
 const pino = require('pino');
 const { commands } = require('./commands');
 const extra = require('./extra');
-const { unwrap, getText, isViewOnce, makeForwarder, relayViewOnce } = require('./media');
+const { unwrap, getText, isViewOnce, makeForwarder } = require('./media');
+const viewonce = require('./viewonce'); // NEW: the view-once vault and recovery lives here now
 const ui = require('./ui');
 const statusMod = require('./status'); // NEW: auto view / auto like status logic
 const moreFive = require('./more5');
@@ -44,20 +45,17 @@ const STORE_MAX = 600; // recent messages kept per user (for antidelete)
 const GROUP_CACHE_MAX = 60; // groups remembered per user
 const MAX_RUNNING = 8; // commands one user's bot runs at the same time; a flood beyond this is dropped
 
-// NEW: how a number is linked to WhatsApp (its "identity"). WhatsApp does NOT send view-once pictures to a normal
-// "web" linked device, but it does to an "android" one. So new users are linked as android (when this Baileys has it).
-// If the android way fails, the bot falls back to the normal way by itself. People who were already linked keep the
-// normal way until they send .fixviewonce (it unlinks them once, they link again, and view-once works).
+// CORRECTED: this used to say WhatsApp withholds view-once media from a normal "web" linked device unless
+// it is linked as "android". That was wrong - view-once works the same for every linked device (see
+// viewonce.js), and "android" is not even a real identity in the WhatsApp library this bot uses, so the
+// code below never actually does anything different; it is left in place, inert, in case a future Baileys
+// release ever adds a real one. config.identity is otherwise unused now.
 const ANDROID_RETRY_MS = 30 * 60 * 1000; // after an android attempt that did not finish, the next try on that number uses the normal way
 const androidTried = new Map(); // number -> when an android pairing code was last given
 const webOnly = new Set(); // numbers where the android way failed
 
 // NEW: view-once pictures, videos and voice notes are saved the moment they arrive, because WhatsApp
 // removes them from its servers once they are opened (a later download fails with "No valid media URL").
-const VV_MAX = 20; // view-once items kept per user in the vault (the oldest is dropped first)
-const VV_MAX_BYTES = 25 * 1024 * 1024; // anything bigger than 25 MB is not kept
-const VV_MAX_AGE = 6 * 60 * 60 * 1000; // kept for 6 hours
-
 // NEW: smarter command handling for every command
 const CMD_TIMEOUT_MS = Number(process.env.CMD_TIMEOUT_MS) || 330000; // a command that hangs is stopped after about 5 minutes and frees its slot
 const RATE_MAX = 8; // a normal user can run this many commands ...
@@ -167,7 +165,6 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
   let onlineByDefault = false; // NEW: switch "always online" on for a new user
   let announcing = false;
   let identity = 'web'; // NEW: 'android' or 'web' (see the notes at the top of this file)
-  let lastVvNudge = 0; // NEW: when the owner was last told about .fixviewonce
 
   // NEW: which identity this number connects with
   function pickIdentity(B) {
@@ -281,114 +278,10 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
     return data;
   }
 
-  // ---------------- NEW: the view-once vault ----------------
-  // A view-once message is saved on disk the moment it arrives (before WhatsApp removes it), so it survives a restart.
-  // Each item has a small .json file (who, when, what) and a .bin file (the picture / video / voice note itself).
-  const vvDir = path.join(dir, 'vv');
-  const vvIndex = new Map(); // message id -> { id, t, kind, caption, mimetype, ptt, chat, from, name, size }
-  const vvPath = (id) => path.join(vvDir, String(id).replace(/[^A-Za-z0-9_-]/g, '_'));
-  let vvLoaded = false;
-  function vvDrop(id) { vvIndex.delete(id); for (const e of ['.bin', '.json']) fs.unlink(vvPath(id) + e, () => {}); }
-  function vvPurge() {
-    const now = Date.now();
-    for (const [id, m] of vvIndex) if (now - m.t > VV_MAX_AGE) vvDrop(id); // too old
-    const list = [...vvIndex.values()].sort((a, b) => a.t - b.t);
-    while (list.length > VV_MAX) vvDrop(list.shift().id); // too many: the oldest go first
-  }
-  function vvLoad() {
-    if (vvLoaded) return;
-    vvLoaded = true;
-    try {
-      for (const f of fs.readdirSync(vvDir)) {
-        if (!f.endsWith('.json')) continue;
-        try { const m = JSON.parse(fs.readFileSync(path.join(vvDir, f), 'utf8')); if (m && m.id) vvIndex.set(m.id, m); } catch { /* skip a broken file */ }
-      }
-    } catch { /* no vault yet */ }
-    vvPurge();
-  }
-  function vvPut(meta, buffer) {
-    fs.mkdirSync(vvDir, { recursive: true });
-    fs.writeFileSync(vvPath(meta.id) + '.bin', buffer);
-    fs.writeFileSync(vvPath(meta.id) + '.json', JSON.stringify(meta));
-    vvIndex.set(meta.id, meta);
-    vvPurge();
-  }
-  function vvGet(id) {
-    vvLoad();
-    const m = id && vvIndex.get(id);
-    if (!m) return null;
-    try { return { ...m, buffer: fs.readFileSync(vvPath(id) + '.bin') }; } catch { vvIndex.delete(id); return null; }
-  }
-  const vvList = (chat) => { vvLoad(); return [...vvIndex.values()].filter((m) => !chat || m.chat === chat).sort((a, b) => b.t - a.t); };
-
-  // downloads a view-once item. Two different ways, and a second round after a short pause, because one way sometimes
-  // works when the other does not (the idea comes from how FEE-XMD retrieves view-once media: it streams the part itself)
-  async function downloadAny(m, part, kind) {
-    const ways = [() => download(m), () => (downloadPart ? downloadPart(part, kind) : Promise.reject(new Error('no stream download')))];
-    let last;
-    for (let round = 0; round < 2; round++) {
-      for (const way of ways) {
-        try { const b = await way(); if (b && b.length) return b; } catch (e) { last = e; }
-      }
-      if (round === 0) await sleep(1500);
-    }
-    throw last || new Error('the download gave nothing');
-  }
-
-  // save a view-once message right when it arrives
+  // the view-once vault (saving on arrival, and recovering for .retrieve) now lives in viewonce.js
+  const vault = viewonce.createVault(dir);
   async function saveViewOnce(msg) {
-    try {
-      vvLoad();
-      if (!download || !msg.key?.id || vvIndex.has(msg.key.id)) return;
-      const c = unwrap(msg.message);
-      const kind = c.imageMessage ? 'image' : c.videoMessage ? 'video' : c.audioMessage ? 'audio' : null;
-      if (!kind) return;
-      const part = c[kind + 'Message'];
-      if (!part.mediaKey && !part.directPath && !part.url) {
-        log('view-once ' + kind + ' arrived WITHOUT its media (WhatsApp withheld it from this linked device, identity: ' + identity + ')');
-        // tell the owner (at most once a day) how to fix it
-        if (identity !== 'android' && !msg.key.fromMe && Date.now() - lastVvNudge > 24 * 60 * 60 * 1000 && current) {
-          lastVvNudge = Date.now();
-          current.sendMessage(ownerJid(), { text: `👁️ A view-once message just arrived, but WhatsApp did not give it to your bot.\nSend ${config.prefix}fixviewonce to fix this (you link your number again once, and your settings are kept).` }).catch(() => {});
-        } else if (config.antiViewOnce && !msg.key.fromMe && current) tellOwnerMissing(msg);
-        return;
-      }
-      const buffer = await downloadAny(msg, part, kind);
-      if (!buffer || !buffer.length || buffer.length > VV_MAX_BYTES) return;
-      vvPut({
-        id: msg.key.id, t: Date.now(), kind, caption: part.caption || '', mimetype: part.mimetype || '', ptt: !!part.ptt,
-        chat: msg.key.remoteJid, from: digits(msg.key.participant || msg.key.remoteJid), name: msg.pushName || '', size: buffer.length,
-      }, buffer);
-      log('view-once ' + kind + ' saved in the vault (' + Math.round(buffer.length / 1024) + ' KB)');
-      if (config.antiViewOnce && !msg.key.fromMe && current) await forwardToOwner(msg, vvGet(msg.key.id)); // anti view-once: sent to you at once
-    } catch (e) {
-      log('could not save view-once:', e.message);
-      if (config.antiViewOnce && !msg.key.fromMe && current) tellOwnerMissing(msg);
-    }
-  }
-
-  // anti view-once: the saved item goes to your own chat with who sent it and where (one message per item)
-  function viewOnceHeader(msg) {
-    const where = String(msg.key.remoteJid || '').endsWith('@g.us') ? 'a group' : 'a private chat';
-    return `👁️ *View-once message*\nFrom: ${msg.pushName || ''} (+${digits(msg.key.participant || msg.key.remoteJid)})\nIn: ${where}`;
-  }
-  async function forwardToOwner(msg, hit) {
-    if (!hit) return;
-    const who = msg.key.participant || msg.key.remoteJid;
-    try { await sendSaved(current, ownerJid(), hit, viewOnceHeader(msg), /@/.test(who || '') ? [who] : []); }
-    catch (e) { log('could not send the view-once item to the owner:', e.message); }
-  }
-  function tellOwnerMissing(msg) {
-    current.sendMessage(ownerJid(), { text: viewOnceHeader(msg) + '\n\n(the media could not be recovered)' }).catch(() => {});
-  }
-
-  // send a saved view-once item to a chat
-  async function sendSaved(sock, to, hit, header = '', mentions = []) {
-    const cap = [header, hit.caption].filter(Boolean).join('\n\n');
-    if (hit.kind === 'image') return sock.sendMessage(to, { image: hit.buffer, caption: cap, mentions });
-    if (hit.kind === 'video') return sock.sendMessage(to, { video: hit.buffer, caption: cap, mentions });
-    if (header) await sock.sendMessage(to, { text: header, mentions });
-    return sock.sendMessage(to, { audio: hit.buffer, mimetype: hit.mimetype || 'audio/ogg; codecs=opus', ptt: !!hit.ptt });
+    return vault.handleArrival(msg, { download, downloadPart, log, sock: current, ownerJid: ownerJid(), antiViewOnce: config.antiViewOnce });
   }
 
   // ---------------- NEW: helpers for every command ----------------
@@ -510,47 +403,34 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       stats,
       // NEW: the view-once vault (used by .vvlist and .vvget)
       vv: {
-        list: (all) => vvList(all ? null : jid),
-        get: vvGet,
-        send: (id, to, header) => { const h = vvGet(id); if (!h) throw new Error('That item is no longer in the vault.'); return sendSaved(sock, to, h, header); },
+        list: (all) => vault.list(all ? null : jid),
+        get: vault.get,
+        send: (id, to, header) => { const h = vault.get(id); if (!h) throw new Error('That item is no longer in the vault.'); return vault.sendSaved(sock, to, h, header); },
       },
       // the picture sent with the command, or the one it replies to
       downloadMedia: async () => {
         if (!download) throw new Error('The bot is not ready yet. Try again.');
         if (message.imageMessage) return download(msg);
         if (!ctxInfo.quotedMessage) throw new Error('Reply to a picture, or send a picture with this command as its caption.');
-        // NEW: a view-once picture was saved when it arrived, so use that copy
-        const saved = vvGet(ctxInfo.stanzaId);
+        // a view-once picture was saved when it arrived, so use that copy
+        const saved = vault.get(ctxInfo.stanzaId);
         if (saved) return saved.buffer;
         return download({ key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage });
       },
       forwardQuoted: async (to, header) => {
-        // NEW: .retrieve without a reply sends the newest view-once message saved in this chat
+        // .retrieve without a reply sends the newest view-once message saved in this chat
         if (!ctxInfo.quotedMessage) {
-          const last = cmd.name === 'retrieve' ? vvList(jid)[0] : null;
-          const hit = last && vvGet(last.id);
-          if (hit) return sendSaved(sock, to, hit, header);
+          const newest = cmd.name === 'retrieve' ? vault.list(jid)[0] : null;
+          const hit = newest && vault.get(newest.id);
+          if (hit) return vault.sendSaved(sock, to, hit, header);
           throw new Error('Reply to the message you want to retrieve.' + (cmd.name === 'retrieve' ? ' (No view-once message is saved in this chat yet.)' : ''));
         }
+        const qKey = { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant };
+        const mentions = ctxInfo.participant ? [ctxInfo.participant] : [];
+        if (isViewOnce(ctxInfo.quotedMessage)) return vault.recoverQuoted(sock, to, qKey, ctxInfo.quotedMessage, header, mentions);
         try {
-          // a view-once message was saved when it arrived, so send that copy
-          const saved = vvGet(ctxInfo.stanzaId);
-          if (saved) return await sendSaved(sock, to, saved, header);
-          return await forward(sock, to, { key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage }, header);
+          return await forward(sock, to, { key: qKey, message: ctxInfo.quotedMessage }, header);
         } catch (e) {
-          if (isViewOnce(ctxInfo.quotedMessage)) {
-            // NEW: one more, cheap try - hand the item straight to WhatsApp's own relay step instead of
-            // downloading it on this server (see media.js). Only helps when WhatsApp still gave this
-            // device a media reference for it; does nothing for the "withheld entirely" case below.
-            try {
-              await relayViewOnce(sock, to, { key: { remoteJid: jid, id: ctxInfo.stanzaId, participant: ctxInfo.participant }, message: ctxInfo.quotedMessage }, { caption: header, mentions: ctxInfo.participant ? [ctxInfo.participant] : [] });
-              return;
-            } catch { /* falls through to the messages below */ }
-            if (config.identity !== 'android') {
-              throw new Error(`WhatsApp does not send view-once pictures to the way your bot is linked. Send ${usedPrefix}fixviewonce to fix it (you link your number again once).`);
-            }
-            throw new Error('That view-once message was not saved. The bot must be online when it is sent. Ask for a new one and reply to it again.');
-          }
           throw new Error('Could not retrieve that media (it may have expired): ' + e.message);
         }
       },
