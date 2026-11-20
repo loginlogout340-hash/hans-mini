@@ -240,7 +240,7 @@ function restoreRelink(number, userDir) {
     const sf = path.join(from, 'settings.json');
     if (fs.existsSync(sf)) {
       const st = JSON.parse(fs.readFileSync(sf, 'utf8'));
-      delete st.identity; // so the new link picks the android way
+      st.identity = 'try-android'; // CHANGED: only this deliberate relink attempts the android way; a brand-new sign-up no longer does
       fs.writeFileSync(path.join(userDir, 'settings.json'), JSON.stringify(st));
     }
     const ef = path.join(from, 'extra.json');
@@ -275,29 +275,12 @@ async function relinkWithCode(number) {
 async function fixviewonce(ctx) {
   if (!ctx.isMainOwner) throw new Error('Only the owner of this bot can use this command.');
   const p = ctx.prefix;
-  if (ctx.config.identity === 'android') {
-    return '✅ Your bot is already linked the new way, so view-once messages can be saved. If one still fails, the bot was probably offline when it was sent.';
-  }
-  const manager = require('./manager');
-  const number = ctx.config.owners[0];
-  // the new pairing code can be sent by the admin's bot when it is online (not for the admin's own number)
-  const auto = !!process.env.ADMIN_NUMBER && !manager.isAdmin(number) && manager.users().some((u) => manager.isAdmin(u.number) && u.online);
-  const where = siteUrl() || 'the Hans-Mini website';
-  if ((ctx.args[0] || '').toLowerCase() !== 'confirm') {
-    const steps = auto
-      ? `1. The bot unlinks your number.\n2. About 30 seconds later you get a message with a new pairing code.\n3. In WhatsApp open Linked devices > Link a device > Link with phone number instead, and enter the code.`
-      : `1. The bot unlinks your number.\n2. You open ${where} and link again with a new pairing code (about 1 minute).`;
-    return `👁️ *View-once fix*\n\nWhatsApp does not send view-once pictures to the way your bot is linked now. Linking again fixes it.\n\nWhen you confirm:\n${steps}\n\nYour settings are kept.\n\nReady? Send *${p}fixviewonce confirm*`;
-  }
-  // keep the settings, then unlink
-  try { ctx.config.save(); ctx.sock.hm?.save?.(); } catch { /* ignore */ }
-  await sleep(1000); // the settings files are written a moment later
-  saveForRelink(number, path.dirname(ctx.config.sessionDir));
-  await ctx.reply(auto
-    ? '🔓 Unlinking now. In about 30 seconds a message with your new pairing code will arrive from the admin number.'
-    : `🔓 Unlinking now. Open ${where} and link your number again.`);
-  await sleep(2000);
-  await ctx.sock.logout(); // the bot then removes the old data by itself (manager.js)
+  // CORRECTED: this command used to unlink and relink your number, believing that fixed view-once. It
+  // never actually did - view-once works the same way for every linked number (see viewonce.js), and
+  // relinking changed nothing about that. It no longer does anything to your bot. If .retrieve still
+  // fails for a specific message, the bot was most likely offline for a moment when it arrived - try
+  // asking for a new one while the bot is online, and reply to it right away with ${p}retrieve.
+  return `👁️ View-once already works for every user - nothing to fix here, and this command no longer relinks your number.\n\nIf ${p}retrieve fails on a message, the bot was most likely offline for a moment when it arrived. Ask for a new one while the bot is online and reply to it right away.`;
   if (auto) relinkWithCode(number).catch((e) => console.error('[more7] relink:', e.message));
 }
 
@@ -349,7 +332,7 @@ function register(add) {
   add('vvlist', 'Owner', '[all]', 'List the view-once messages saved in the vault', vvlist, { owner: true, aliases: ['vault'] });
   add('vvget', 'Owner', '<number>', 'Get a saved view-once message from the vault (sent to your own chat)', vvget, { owner: true });
   add('cmdstats', 'Owner', '', 'Which commands are used most, and which fail', cmdstats, { owner: true, aliases: ['topcmds'] });
-  add('fixviewonce', 'Owner', '[confirm]', 'Fix view-once retrieve: unlink and link your number again once', fixviewonce, { owner: true, aliases: ['fixvv'] });
+  add('fixviewonce', 'Owner', '', 'Old command, kept for anyone still told to use it: view-once already works for everyone, nothing to fix', fixviewonce, { owner: true, aliases: ['fixvv'] });
   add('textall', 'Owner', '<message>', 'Send one message to all your contacts, one by one (safety delay, asks to confirm)', textall, { owner: true, aliases: ['sendall'] });
 }
 
