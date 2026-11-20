@@ -280,8 +280,12 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
 
   // the view-once vault (saving on arrival, and recovering for .retrieve) now lives in viewonce.js
   const vault = viewonce.createVault(dir);
-  async function saveViewOnce(msg) {
-    return vault.handleArrival(msg, { download, downloadPart, log, sock: current, ownerJid: ownerJid(), antiViewOnce: config.antiViewOnce });
+  // FIX: this now takes the SAME sock the message arrived on, like every other handler below (watchers,
+  // handle) already does. It previously read the outer `current` variable instead, which can briefly
+  // point at a newer socket if a reconnect happens while this is still running - using the message's own
+  // socket removes that mismatch.
+  async function saveViewOnce(sock, msg) {
+    return vault.handleArrival(msg, { download, downloadPart, log, sock, ownerJid: ownerJid(), antiViewOnce: config.antiViewOnce });
   }
 
   // ---------------- NEW: helpers for every command ----------------
@@ -544,6 +548,18 @@ function createBot({ number, dir, onLoggedOut, onEvent }) {
       // "Waiting for this message. This may take a while."
       getMessage: async (key) => store.get(key.id)?.msg?.message || undefined,
     });
+    // NEW: every message this bot sends is captured the instant it is sent, so getMessage() just above can
+    // always resupply it if WhatsApp asks for a retry. This used to rely only on Baileys echoing a sent
+    // message back through messages.upsert as type "append" - which does not reliably happen - leaving a
+    // phone that failed to decrypt a reply the first time permanently stuck on "Waiting for this message.
+    // This may take a while." with nothing to actually resend. Wrapping the send call here, once, covers
+    // every message the bot sends anywhere in the code, with no other file needing to change.
+    const rawSend = sock.sendMessage.bind(sock);
+    sock.sendMessage = async (jid, content, options) => {
+      const sent = await rawSend(jid, content, options);
+      if (sent?.key?.id && sent.message) remember(sent);
+      return sent;
+    };
     current = sock;
 
     sock.ev.on('creds.update', saveCreds);
